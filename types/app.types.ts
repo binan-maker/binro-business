@@ -1,4 +1,4 @@
-import type { Database, UserRole, MemberStatus, PropertyStatus, RoomType, PaymentMethod, TenantGender } from "./database.types";
+import type { Database, UserRole, MemberStatus, PropertyStatus, RoomType, RoomStatus, BedStatus, PaymentMethod, TenantGender } from "./database.types";
 
 export type Profile = Database["public"]["Tables"]["profiles"]["Row"];
 export type Business = Database["public"]["Tables"]["businesses"]["Row"];
@@ -35,6 +35,52 @@ export interface RoomWithBeds extends Room {
   floor?: Floor | null;
 }
 
+export interface BedWithOccupant extends Bed {
+  current_occupant?: {
+    occupancy_id: string;
+    tenant_id: string;
+    tenant_name: string;
+    tenant_phone: string | null;
+    check_in_date: string;
+  } | null;
+}
+
+export interface RoomWithDetails extends Room {
+  floor?: Floor | null;
+  beds: BedWithOccupant[];
+  bedsTotal: number;
+  bedsOccupied: number;
+  bedsAvailable: number;
+  occupancyRate: number;
+}
+
+export interface FloorWithStats extends Floor {
+  roomsCount: number;
+  bedsTotal: number;
+  bedsOccupied: number;
+  bedsAvailable: number;
+  occupancyRate: number;
+}
+
+export interface FloorFormData {
+  name: string;
+  floor_number?: number | null;
+}
+
+export interface RoomFormData {
+  room_number: string;
+  room_type: RoomType;
+  floor_id?: string | null;
+  status?: RoomStatus;
+}
+
+export interface BedFormData {
+  bed_number: string;
+  monthly_rent: number; // in paise
+  status?: BedStatus;
+}
+
+
 export interface PropertyOverview extends Property {
   floors_count?: number;
   rooms_count?: number;
@@ -42,6 +88,38 @@ export interface PropertyOverview extends Property {
   occupied_beds?: number;
   available_beds?: number;
 }
+
+export interface PropertyAssignedStaff {
+  id: string;
+  business_member_id: string;
+  full_name: string;
+  phone: string | null;
+  role: UserRole;
+}
+
+export interface PropertyWithStats extends Property {
+  floorsCount: number;
+  roomsCount: number;
+  bedsTotal: number;
+  bedsOccupied: number;
+  bedsAvailable: number;
+  occupancyRate: number;
+  assignedStaff: PropertyAssignedStaff[];
+}
+
+export interface PropertyFormData {
+  name: string;
+  address?: string | null;
+  status?: PropertyStatus;
+}
+
+export interface PropertyFilterOptions {
+  search?: string;
+  status?: PropertyStatus | "all";
+  sortBy?: "name" | "created_at" | "occupancy" | "rooms";
+  sortOrder?: "asc" | "desc";
+}
+
 
 export interface TenantWithStay extends Tenant {
   current_occupancy?: (Occupancy & {
@@ -108,4 +186,4 @@ export interface RecordPaymentPayload {
   }>;
 }
 
-export type { UserRole, MemberStatus, PropertyStatus, RoomType, PaymentMethod, TenantGender };
+export type { UserRole, MemberStatus, PropertyStatus, RoomType, RoomStatus, BedStatus, PaymentMethod, TenantGender };

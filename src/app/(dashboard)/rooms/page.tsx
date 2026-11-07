@@ -1,402 +1,739 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useMemo, Suspense } from "react";
+import { useSearchParams } from "next/navigation";
 import { businessService } from "@/services/business.service";
 import { propertyService } from "@/services/property.service";
-import { roomService, type RoomWithBedsList } from "@/services/room.service";
-import type { Property, RoomType } from "@/types/app.types";
+import { roomService } from "@/services/room.service";
+import type {
+  PropertyWithStats,
+  FloorWithStats,
+  RoomWithDetails,
+  BedWithOccupant,
+  FloorFormData,
+  RoomFormData,
+  BedFormData,
+} from "@/types/app.types";
+import type { BedStatus } from "@/types/database.types";
+import { getInventoryPermissions, type InventoryPermissions } from "@/lib/permissions/room.permissions";
+import { PropertyContextSelector } from "@/components/rooms/PropertyContextSelector";
+import { FloorTabs } from "@/components/rooms/FloorTabs";
+import { RoomCard } from "@/components/rooms/RoomCard";
+import { RoomDetailsModal } from "@/components/rooms/RoomDetailsModal";
+import { AddRoomModal } from "@/components/rooms/AddRoomModal";
+import { EditRoomModal } from "@/components/rooms/EditRoomModal";
+import { AddFloorModal } from "@/components/rooms/AddFloorModal";
+import { ManageFloorsModal } from "@/components/rooms/ManageFloorsModal";
+import { BedModal } from "@/components/rooms/BedModal";
+import { BedStatusModal } from "@/components/rooms/BedStatusModal";
 import {
   BedDouble,
   Plus,
-  Building,
-  Loader2,
+  Search,
   X,
+  Loader2,
   AlertCircle,
   CheckCircle2,
+  DoorOpen,
+  Users,
 } from "lucide-react";
 
-export default function RoomsPage() {
+function RoomsContent() {
+  const searchParams = useSearchParams();
+  const queryPropId = searchParams.get("propertyId");
+
   const [loading, setLoading] = useState(true);
-  const [properties, setProperties] = useState<Property[]>([]);
+  const [propertiesLoading, setPropertiesLoading] = useState(true);
+  const [properties, setProperties] = useState<PropertyWithStats[]>([]);
   const [selectedPropertyId, setSelectedPropertyId] = useState<string>("");
-  const [rooms, setRooms] = useState<RoomWithBedsList[]>([]);
-  const [modalOpen, setModalOpen] = useState(false);
 
-  // Form State
-  const [roomNumber, setRoomNumber] = useState("");
-  const [roomType, setRoomType] = useState<RoomType>("shared");
-  const [bedCount, setBedCount] = useState(2);
-  const [monthlyRent, setMonthlyRent] = useState(8500);
-  const [saving, setSaving] = useState(false);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [permissions, setPermissions] = useState<InventoryPermissions>({
+    canCreateFloor: true,
+    canEditFloor: true,
+    canDeleteFloor: true,
+    canCreateRoom: true,
+    canEditRoom: true,
+    canDeleteRoom: true,
+    canCreateBed: true,
+    canEditBed: true,
+    canDeleteBed: true,
+    isWarden: false,
+    isAdminOrOwner: true,
+  });
 
-  const loadProperties = useCallback(async () => {
-    try {
-      const biz = await businessService.getActiveBusiness();
-      if (!biz) {
-        setLoading(false);
-        return;
+  // Floors & Rooms Data
+  const [floors, setFloors] = useState<FloorWithStats[]>([]);
+  const [rooms, setRooms] = useState<RoomWithDetails[]>([]);
+
+  // Filter & Search State
+  const [selectedFloorId, setSelectedFloorId] = useState<string>("all");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [roomTypeFilter, setRoomTypeFilter] = useState<string>("all");
+  const [statusFilter, setStatusFilter] = useState<string>("all");
+
+  // Modals State
+  const [addRoomModalOpen, setAddRoomModalOpen] = useState(false);
+  const [editRoomModalOpen, setEditRoomModalOpen] = useState(false);
+  const [selectedRoom, setSelectedRoom] = useState<RoomWithDetails | null>(null);
+  const [roomDetailsModalOpen, setRoomDetailsModalOpen] = useState(false);
+
+  const [addFloorModalOpen, setAddFloorModalOpen] = useState(false);
+  const [manageFloorsModalOpen, setManageFloorsModalOpen] = useState(false);
+
+  const [bedModalOpen, setBedModalOpen] = useState(false);
+  const [bedModalMode, setBedModalMode] = useState<"add" | "edit">("add");
+  const [selectedBed, setSelectedBed] = useState<BedWithOccupant | null>(null);
+
+  const [bedStatusModalOpen, setBedStatusModalOpen] = useState(false);
+
+  // Notification Toast
+  const [notification, setNotification] = useState<{
+    type: "success" | "error";
+    message: string;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!notification) return;
+    const timer = setTimeout(() => setNotification(null), 5000);
+    return () => clearTimeout(timer);
+  }, [notification]);
+
+  // 1. Initial Load: Business & Properties
+  useEffect(() => {
+    async function loadPropertiesList() {
+      try {
+        setPropertiesLoading(true);
+        const biz = await businessService.getActiveBusiness();
+        if (!biz) {
+          setPropertiesLoading(false);
+          setLoading(false);
+          return;
+        }
+
+        // Check user role and permissions
+        const context = await propertyService.getUserPropertyContext(biz.id);
+        const invPerms = getInventoryPermissions(context.role);
+        setPermissions(invPerms);
+
+        const props = await propertyService.getProperties(biz.id);
+        setProperties(props);
+
+        if (props.length > 0) {
+          // Determine initial property context
+          let targetPropId = "";
+          if (queryPropId && props.some((p) => p.id === queryPropId)) {
+            targetPropId = queryPropId;
+          } else if (typeof window !== "undefined") {
+            const stored = sessionStorage.getItem("binro_active_property_id");
+            if (stored && props.some((p) => p.id === stored)) {
+              targetPropId = stored;
+            } else {
+              targetPropId = props[0].id;
+            }
+          } else {
+            targetPropId = props[0].id;
+          }
+
+          setSelectedPropertyId(targetPropId);
+          if (typeof window !== "undefined") {
+            sessionStorage.setItem("binro_active_property_id", targetPropId);
+          }
+        }
+      } catch (err) {
+        console.error("Error loading properties:", err);
+      } finally {
+        setPropertiesLoading(false);
       }
-      const props = await propertyService.getProperties(biz.id);
-      setProperties(props);
-      if (props.length > 0) {
-        setSelectedPropertyId((prev) => prev || props[0].id);
-      }
-    } catch (err) {
-      console.error("Error loading properties:", err);
-    } finally {
+    }
+
+    loadPropertiesList();
+  }, [queryPropId]);
+
+  // 2. Load Floors & Rooms for Selected Property
+  const loadInventory = useCallback(async () => {
+    if (!selectedPropertyId) {
       setLoading(false);
-    }
-  }, []);
-
-  const loadRooms = useCallback(async (propId: string) => {
-    if (!propId) return;
-    try {
-      const data = await roomService.getRoomsByProperty(propId);
-      setRooms(data);
-    } catch (err) {
-      console.error("Error loading rooms:", err);
-    }
-  }, []);
-
-  useEffect(() => {
-    loadProperties();
-  }, [loadProperties]);
-
-  useEffect(() => {
-    if (selectedPropertyId) {
-      loadRooms(selectedPropertyId);
-    }
-  }, [selectedPropertyId, loadRooms]);
-
-  const handleCreateRoom = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedPropertyId || !roomNumber.trim()) {
-      setErrorMsg("Please enter a room number and select a property.");
       return;
     }
 
-    setSaving(true);
-    setErrorMsg(null);
-
     try {
-      // Convert INR rupees to paise (e.g. 8500 Rs = 850000 paise)
-      const rentPaise = Math.round(Number(monthlyRent) * 100);
-      await roomService.createRoomWithBeds(
-        selectedPropertyId,
-        roomNumber,
-        roomType,
-        Number(bedCount),
-        rentPaise
-      );
+      setLoading(true);
+      const [floorsData, roomsData] = await Promise.all([
+        roomService.getFloorsByProperty(selectedPropertyId),
+        roomService.getRoomsWithDetails(
+          selectedPropertyId,
+          selectedFloorId === "all" ? undefined : selectedFloorId === "unassigned" ? null : selectedFloorId,
+          searchQuery
+        ),
+      ]);
 
-      setRoomNumber("");
-      setBedCount(2);
-      setMonthlyRent(8500);
-      setModalOpen(false);
-      await loadRooms(selectedPropertyId);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to create room.";
-      setErrorMsg(msg);
+      setFloors(floorsData);
+      setRooms(roomsData);
+
+      // Keep selectedRoom updated if details modal is open
+      if (selectedRoom) {
+        const refreshed = roomsData.find((r) => r.id === selectedRoom.id);
+        if (refreshed) setSelectedRoom(refreshed);
+      }
+    } catch (err) {
+      console.error("Error loading inventory:", err);
+      setNotification({
+        type: "error",
+        message: "Failed to load rooms and beds from Supabase.",
+      });
     } finally {
-      setSaving(false);
+      setLoading(false);
+    }
+  }, [selectedPropertyId, selectedFloorId, searchQuery, selectedRoom]);
+
+  useEffect(() => {
+    if (selectedPropertyId) {
+      loadInventory();
+    }
+  }, [selectedPropertyId, selectedFloorId, searchQuery, loadInventory]);
+
+  // Property Context Switcher
+  const handleSelectProperty = (propertyId: string) => {
+    setSelectedPropertyId(propertyId);
+    setSelectedFloorId("all");
+    setSearchQuery("");
+    if (typeof window !== "undefined") {
+      sessionStorage.setItem("binro_active_property_id", propertyId);
     }
   };
 
-  const selectedProp = properties.find((p) => p.id === selectedPropertyId);
+  // Floor Handlers
+  const handleCreateFloor = async (formData: FloorFormData) => {
+    await roomService.createFloor(selectedPropertyId, formData);
+    setNotification({
+      type: "success",
+      message: `Floor "${formData.name}" created successfully.`,
+    });
+    await loadInventory();
+  };
+
+  const handleUpdateFloor = async (
+    floorId: string,
+    name: string,
+    floorNumber?: number | null
+  ) => {
+    await roomService.updateFloor(floorId, { name, floor_number: floorNumber });
+    setNotification({
+      type: "success",
+      message: `Floor updated successfully.`,
+    });
+    await loadInventory();
+  };
+
+  const handleDeleteFloor = async (floorId: string) => {
+    await roomService.deleteFloor(floorId);
+    setNotification({
+      type: "success",
+      message: "Floor deleted successfully.",
+    });
+    if (selectedFloorId === floorId) {
+      setSelectedFloorId("all");
+    }
+    await loadInventory();
+  };
+
+  // Room Handlers
+  const handleCreateRoom = async (
+    formData: RoomFormData,
+    initialBeds?: { count: number; rentRupees: number }
+  ) => {
+    await roomService.createRoom(selectedPropertyId, formData, initialBeds);
+    setNotification({
+      type: "success",
+      message: `Room ${formData.room_number} added with ${initialBeds?.count || 0} bed(s).`,
+    });
+    await loadInventory();
+  };
+
+  const handleUpdateRoom = async (
+    roomId: string,
+    formData: Partial<RoomFormData>
+  ) => {
+    await roomService.updateRoom(roomId, formData);
+    setNotification({
+      type: "success",
+      message: "Room updated successfully.",
+    });
+    await loadInventory();
+  };
+
+  const handleDeleteRoom = async (room: RoomWithDetails) => {
+    if (room.bedsOccupied > 0) {
+      setNotification({
+        type: "error",
+        message: `Cannot delete Room ${room.room_number}: ${room.bedsOccupied} bed(s) are occupied. Check out occupants first.`,
+      });
+      return;
+    }
+
+    if (!confirm(`Are you sure you want to delete Room ${room.room_number} and all its vacant beds?`)) {
+      return;
+    }
+
+    try {
+      await roomService.deleteRoom(room.id);
+      setNotification({
+        type: "success",
+        message: `Room ${room.room_number} was deleted.`,
+      });
+      if (selectedRoom?.id === room.id) {
+        setRoomDetailsModalOpen(false);
+      }
+      await loadInventory();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to delete room.";
+      setNotification({ type: "error", message: msg });
+    }
+  };
+
+  // Bed Handlers
+  const handleOpenAddBed = (room: RoomWithDetails) => {
+    setSelectedRoom(room);
+    setSelectedBed(null);
+    setBedModalMode("add");
+    setBedModalOpen(true);
+  };
+
+  const handleOpenEditBed = (bed: BedWithOccupant, room: RoomWithDetails) => {
+    setSelectedRoom(room);
+    setSelectedBed(bed);
+    setBedModalMode("edit");
+    setBedModalOpen(true);
+  };
+
+  const handleOpenBedStatus = (bed: BedWithOccupant, room: RoomWithDetails) => {
+    setSelectedRoom(room);
+    setSelectedBed(bed);
+    setBedStatusModalOpen(true);
+  };
+
+  const handleBedFormSubmit = async (formData: BedFormData) => {
+    if (!selectedRoom) return;
+
+    if (bedModalMode === "add") {
+      await roomService.addBedToRoom(selectedRoom.id, formData);
+      setNotification({
+        type: "success",
+        message: `Bed ${formData.bed_number} added to Room ${selectedRoom.room_number}.`,
+      });
+    } else if (selectedBed) {
+      await roomService.updateBed(selectedBed.id, formData);
+      setNotification({
+        type: "success",
+        message: `Bed ${formData.bed_number} updated.`,
+      });
+    }
+
+    await loadInventory();
+  };
+
+  const handleConfirmBedStatus = async (bedId: string, status: BedStatus) => {
+    await roomService.updateBedStatus(bedId, status);
+    setNotification({
+      type: "success",
+      message: `Bed status updated to "${status}".`,
+    });
+    await loadInventory();
+  };
+
+  const handleDeleteBed = async (bed: BedWithOccupant, room: RoomWithDetails) => {
+    if (bed.status === "occupied") {
+      setNotification({
+        type: "error",
+        message: `Cannot delete Bed ${bed.bed_number} because it is currently occupied. Check out the tenant first.`,
+      });
+      return;
+    }
+
+    if (!confirm(`Are you sure you want to delete Bed ${bed.bed_number} from Room ${room.room_number}?`)) {
+      return;
+    }
+
+    try {
+      await roomService.deleteBed(bed.id);
+      setNotification({
+        type: "success",
+        message: `Bed ${bed.bed_number} removed.`,
+      });
+      await loadInventory();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to delete bed.";
+      setNotification({ type: "error", message: msg });
+    }
+  };
+
+  // Filtered Rooms calculation
+  const filteredRooms = useMemo(() => {
+    return rooms.filter((r) => {
+      const matchesType = roomTypeFilter === "all" || r.room_type === roomTypeFilter;
+      const matchesStatus = statusFilter === "all" || r.status === statusFilter;
+      return matchesType && matchesStatus;
+    });
+  }, [rooms, roomTypeFilter, statusFilter]);
+
+  const unassignedRoomsCount = useMemo(() => {
+    return rooms.filter((r) => !r.floor_id).length;
+  }, [rooms]);
+
+  // Overall Inventory Stats for Selected Property
+  const inventoryStats = useMemo(() => {
+    const totalRooms = rooms.length;
+    const totalBeds = rooms.reduce((acc, r) => acc + r.bedsTotal, 0);
+    const occupiedBeds = rooms.reduce((acc, r) => acc + r.bedsOccupied, 0);
+    const availableBeds = rooms.reduce((acc, r) => acc + r.bedsAvailable, 0);
+    const occupancyRate = totalBeds > 0 ? Math.round((occupiedBeds / totalBeds) * 100) : 0;
+
+    return {
+      totalRooms,
+      totalBeds,
+      occupiedBeds,
+      availableBeds,
+      occupancyRate,
+    };
+  }, [rooms]);
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight text-zinc-900 dark:text-zinc-50">
-            Rooms & Bed Matrix
-          </h1>
-          <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
-            Visual room layout and live bed status queried directly from Supabase.
-          </p>
-        </div>
+      {/* 1. Property Context Header */}
+      <PropertyContextSelector
+        properties={properties}
+        selectedPropertyId={selectedPropertyId}
+        onSelectProperty={handleSelectProperty}
+        isWarden={permissions.isWarden}
+      />
 
-        <div className="flex items-center gap-2.5">
-          {properties.length > 0 && (
-            <div className="relative">
-              <select
-                value={selectedPropertyId}
-                onChange={(e) => setSelectedPropertyId(e.target.value)}
-                className="py-2 px-3 pr-8 text-xs font-semibold rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 text-zinc-800 dark:text-zinc-200 focus:outline-none focus:ring-2 focus:ring-blue-600 appearance-none cursor-pointer"
-              >
-                {properties.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
-
+      {/* 2. Notification Toast Banner */}
+      {notification && (
+        <div
+          className={`p-3.5 rounded-xl text-xs flex items-center justify-between gap-3 border transition-all animate-in fade-in duration-200 ${
+            notification.type === "success"
+              ? "bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800"
+              : "bg-red-50 dark:bg-red-950/40 text-red-800 dark:text-red-300 border-red-200 dark:border-red-800"
+          }`}
+        >
+          <div className="flex items-center gap-2">
+            {notification.type === "success" ? (
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+            ) : (
+              <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+            )}
+            <span className="font-medium">{notification.message}</span>
+          </div>
           <button
-            onClick={() => {
-              setErrorMsg(null);
-              setModalOpen(true);
-            }}
-            disabled={properties.length === 0}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 transition-colors shadow-xs cursor-pointer"
+            onClick={() => setNotification(null)}
+            className="text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 text-xs"
           >
-            <Plus className="w-4 h-4" />
-            Add Room & Beds
+            Dismiss
           </button>
         </div>
-      </div>
+      )}
 
-      {loading ? (
-        <div className="min-h-[40vh] flex flex-col items-center justify-center gap-2">
-          <Loader2 className="w-7 h-7 text-blue-600 animate-spin" />
-          <p className="text-xs text-zinc-500">Loading rooms from Supabase...</p>
+      {/* 3. Property Inventory KPI Pulse */}
+      {selectedPropertyId && !loading && rooms.length > 0 && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div className="p-3.5 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 shadow-2xs">
+            <div className="flex items-center justify-between text-zinc-500 dark:text-zinc-400 mb-1">
+              <span className="text-[11px] font-medium uppercase tracking-wider">Rooms</span>
+              <DoorOpen className="w-4 h-4 text-zinc-400" />
+            </div>
+            <div className="text-xl font-bold text-zinc-900 dark:text-zinc-100">
+              {inventoryStats.totalRooms}
+            </div>
+            <p className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-0.5">
+              Across {floors.length} floor{floors.length === 1 ? "" : "s"}
+            </p>
+          </div>
+
+          <div className="p-3.5 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 shadow-2xs">
+            <div className="flex items-center justify-between text-zinc-500 dark:text-zinc-400 mb-1">
+              <span className="text-[11px] font-medium uppercase tracking-wider">Total Beds</span>
+              <BedDouble className="w-4 h-4 text-blue-500" />
+            </div>
+            <div className="text-xl font-bold text-zinc-900 dark:text-zinc-100">
+              {inventoryStats.totalBeds}
+            </div>
+            <p className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-0.5">
+              Configured capacity
+            </p>
+          </div>
+
+          <div className="p-3.5 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 shadow-2xs">
+            <div className="flex items-center justify-between text-zinc-500 dark:text-zinc-400 mb-1">
+              <span className="text-[11px] font-medium uppercase tracking-wider">Occupancy</span>
+              <Users className="w-4 h-4 text-emerald-500" />
+            </div>
+            <div className="flex items-baseline gap-2">
+              <span className="text-xl font-bold text-zinc-900 dark:text-zinc-100">
+                {inventoryStats.occupancyRate}%
+              </span>
+              <span className="text-xs font-medium text-emerald-600 dark:text-emerald-400">
+                {inventoryStats.occupiedBeds} occupied
+              </span>
+            </div>
+            <div className="w-full bg-zinc-100 dark:bg-zinc-800 h-1.5 rounded-full mt-1.5 overflow-hidden">
+              <div
+                className="bg-emerald-500 h-full rounded-full transition-all duration-300"
+                style={{ width: `${Math.min(inventoryStats.occupancyRate, 100)}%` }}
+              />
+            </div>
+          </div>
+
+          <div className="p-3.5 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 shadow-2xs">
+            <div className="flex items-center justify-between text-zinc-500 dark:text-zinc-400 mb-1">
+              <span className="text-[11px] font-medium uppercase tracking-wider">Vacant Beds</span>
+              <CheckCircle2 className="w-4 h-4 text-blue-500" />
+            </div>
+            <div className="text-xl font-bold text-blue-600 dark:text-blue-400">
+              {inventoryStats.availableBeds}
+            </div>
+            <p className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-0.5">
+              Ready for immediate allocation
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* 4. Floors Navigation Tabs */}
+      {selectedPropertyId && (
+        <FloorTabs
+          floors={floors}
+          selectedFloorId={selectedFloorId}
+          onSelectFloor={setSelectedFloorId}
+          onOpenAddFloor={() => setAddFloorModalOpen(true)}
+          onOpenManageFloors={() => setManageFloorsModalOpen(true)}
+          canManageFloors={permissions.canCreateFloor}
+          unassignedRoomsCount={unassignedRoomsCount}
+        />
+      )}
+
+      {/* 4. Filter Strip & Search & Add Room CTA */}
+      {selectedPropertyId && (
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+          {/* Search Input */}
+          <div className="relative flex-1 max-w-sm">
+            <input
+              type="text"
+              placeholder="Search room number (e.g. 101)..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full py-2 pl-9 pr-8 text-xs rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 focus:outline-none focus:ring-2 focus:ring-blue-600 focus:border-transparent transition-all shadow-2xs"
+            />
+            <Search className="w-4 h-4 text-zinc-400 absolute left-3 top-2.5 pointer-events-none" />
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery("")}
+                className="absolute right-2.5 top-2.5 text-zinc-400 hover:text-zinc-600 p-0.5 rounded-md"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+
+          {/* Type & Status Filters */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="relative inline-flex items-center">
+              <select
+                value={roomTypeFilter}
+                onChange={(e) => setRoomTypeFilter(e.target.value)}
+                className="py-2 px-3 text-xs font-medium rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 text-zinc-700 dark:text-zinc-300 focus:outline-none focus:ring-2 focus:ring-blue-600 appearance-none cursor-pointer shadow-2xs pr-8"
+              >
+                <option value="all">All Room Types</option>
+                <option value="single">Single Rooms</option>
+                <option value="shared">Shared Rooms</option>
+                <option value="dormitory">Dormitories</option>
+              </select>
+            </div>
+
+            <div className="relative inline-flex items-center">
+              <select
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+                className="py-2 px-3 text-xs font-medium rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 text-zinc-700 dark:text-zinc-300 focus:outline-none focus:ring-2 focus:ring-blue-600 appearance-none cursor-pointer shadow-2xs pr-8"
+              >
+                <option value="all">All Room Statuses</option>
+                <option value="active">Active Only</option>
+                <option value="maintenance">Maintenance</option>
+                <option value="inactive">Inactive</option>
+              </select>
+            </div>
+
+            {permissions.canCreateRoom && (
+              <button
+                onClick={() => setAddRoomModalOpen(true)}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 active:bg-blue-800 transition-colors shadow-xs cursor-pointer ml-auto sm:ml-0"
+              >
+                <Plus className="w-4 h-4" />
+                Add Room & Beds
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* 5. Main Rooms Grid */}
+      {loading || propertiesLoading ? (
+        <div className="min-h-[40vh] flex flex-col items-center justify-center gap-2.5">
+          <Loader2 className="w-8 h-8 text-blue-600 animate-spin" />
+          <p className="text-xs text-zinc-500">Querying live rooms and beds from Supabase...</p>
         </div>
       ) : properties.length === 0 ? (
-        <div className="p-10 rounded-2xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 text-center space-y-3">
-          <div className="w-12 h-12 rounded-2xl bg-zinc-100 dark:bg-zinc-800 text-zinc-500 flex items-center justify-center mx-auto">
-            <Building className="w-6 h-6" />
-          </div>
-          <h3 className="font-bold text-zinc-900 dark:text-zinc-100 text-base">
-            No properties found
-          </h3>
-          <p className="text-xs text-zinc-500 max-w-sm mx-auto">
-            Please create a property first in the Properties section before adding rooms and beds.
-          </p>
-        </div>
+        null /* handled by PropertyContextSelector */
       ) : rooms.length === 0 ? (
-        <div className="p-10 rounded-2xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 text-center space-y-3">
-          <div className="w-12 h-12 rounded-2xl bg-blue-50 dark:bg-blue-950/40 text-blue-600 flex items-center justify-center mx-auto">
-            <BedDouble className="w-6 h-6" />
+        /* Empty State */
+        <div className="p-12 rounded-2xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 text-center space-y-4">
+          <div className="w-14 h-14 rounded-2xl bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400 flex items-center justify-center mx-auto shadow-xs">
+            <DoorOpen className="w-7 h-7" />
           </div>
-          <h3 className="font-bold text-zinc-900 dark:text-zinc-100 text-base">
-            No rooms in {selectedProp?.name}
-          </h3>
-          <p className="text-xs text-zinc-500 max-w-sm mx-auto">
-            Configure rooms and beds for this property. Beds will automatically be created and ready for tenant allocation.
-          </p>
+          <div>
+            <h3 className="font-bold text-zinc-900 dark:text-zinc-100 text-base">
+              No rooms configured for this selection
+            </h3>
+            <p className="text-xs text-zinc-500 dark:text-zinc-400 max-w-sm mx-auto mt-1">
+              {searchQuery
+                ? `No room numbers match "${searchQuery}".`
+                : selectedFloorId !== "all"
+                ? "No rooms are assigned to this floor yet."
+                : "Add your first room and allocate beds to begin checking in tenants."}
+            </p>
+          </div>
+
+          {permissions.canCreateRoom && (
+            <button
+              onClick={() => setAddRoomModalOpen(true)}
+              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 transition-colors shadow-xs cursor-pointer"
+            >
+              <Plus className="w-4 h-4" />
+              Add First Room
+            </button>
+          )}
+        </div>
+      ) : filteredRooms.length === 0 ? (
+        <div className="p-8 rounded-2xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 text-center text-xs text-zinc-500">
+          No rooms match the applied filters ({roomTypeFilter !== "all" ? `Type: ${roomTypeFilter}` : ""}{" "}
+          {statusFilter !== "all" ? `Status: ${statusFilter}` : ""}).
           <button
-            onClick={() => setModalOpen(true)}
-            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 transition-colors cursor-pointer"
+            onClick={() => {
+              setRoomTypeFilter("all");
+              setStatusFilter("all");
+              setSearchQuery("");
+            }}
+            className="block mx-auto mt-2 text-blue-600 dark:text-blue-400 font-semibold hover:underline"
           >
-            <Plus className="w-4 h-4" />
-            Add Room to {selectedProp?.name}
+            Reset Filters
           </button>
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {rooms.map((room) => (
-            <div
+          {filteredRooms.map((room) => (
+            <RoomCard
               key={room.id}
-              className="p-5 rounded-2xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 shadow-xs space-y-3"
-            >
-              <div className="flex items-center justify-between">
-                <div>
-                  <span className="text-[10px] font-semibold text-blue-600 dark:text-blue-400 uppercase tracking-wider">
-                    {selectedProp?.name}
-                  </span>
-                  <h3 className="text-base font-bold text-zinc-900 dark:text-zinc-100">
-                    Room {room.room_number}
-                  </h3>
-                </div>
-                <span className="px-2.5 py-1 rounded-lg bg-zinc-100 dark:bg-zinc-800 text-[11px] font-medium text-zinc-600 dark:text-zinc-300 capitalize">
-                  {room.room_type}
-                </span>
-              </div>
-
-              <div className="space-y-2 pt-2 border-t border-zinc-100 dark:border-zinc-800">
-                {room.beds.map((bed) => {
-                  const isAvailable = bed.status === "available";
-                  return (
-                    <div
-                      key={bed.id}
-                      className={`p-3 rounded-xl border flex items-center justify-between text-xs ${
-                        isAvailable
-                          ? "bg-emerald-50/40 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-900/40"
-                          : "bg-zinc-50 dark:bg-zinc-800/40 border-zinc-200 dark:border-zinc-800"
-                      }`}
-                    >
-                      <div className="flex items-center gap-2">
-                        <BedDouble
-                          className={`w-4 h-4 ${
-                            isAvailable
-                              ? "text-emerald-600 dark:text-emerald-400"
-                              : "text-zinc-400"
-                          }`}
-                        />
-                        <div>
-                          <p className="font-semibold text-zinc-900 dark:text-zinc-100">
-                            Bed {bed.bed_number}
-                          </p>
-                          <p className="text-[10px] text-zinc-400 capitalize">{bed.status}</p>
-                        </div>
-                      </div>
-                      <div className="text-right">
-                        <p className="font-bold text-zinc-900 dark:text-zinc-100">
-                          ₹{Math.round(bed.monthly_rent / 100).toLocaleString("en-IN")}/mo
-                        </p>
-                        <span
-                          className={`inline-flex items-center gap-0.5 text-[10px] font-semibold uppercase ${
-                            isAvailable
-                              ? "text-emerald-600 dark:text-emerald-400"
-                              : "text-zinc-500"
-                          }`}
-                        >
-                          {isAvailable ? (
-                            <>
-                              <CheckCircle2 className="w-3 h-3" /> Available
-                            </>
-                          ) : (
-                            "Occupied"
-                          )}
-                        </span>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
+              room={room}
+              onViewDetails={(r) => {
+                setSelectedRoom(r);
+                setRoomDetailsModalOpen(true);
+              }}
+              onEditRoom={(r) => {
+                setSelectedRoom(r);
+                setEditRoomModalOpen(true);
+              }}
+              onDeleteRoom={handleDeleteRoom}
+              onAddBed={handleOpenAddBed}
+              onSelectBed={handleOpenBedStatus}
+              canManage={permissions.canCreateRoom}
+            />
           ))}
         </div>
       )}
 
-      {/* Add Room Modal */}
-      {modalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-xs p-4">
-          <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-2xl p-6 max-w-md w-full shadow-xl space-y-4">
-            <div className="flex items-center justify-between">
-              <h3 className="text-base font-bold text-zinc-900 dark:text-zinc-100">
-                Add Room & Beds
-              </h3>
-              <button
-                onClick={() => setModalOpen(false)}
-                className="p-1 rounded-lg text-zinc-400 hover:text-zinc-600 cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
+      {/* Modals */}
+      <AddRoomModal
+        isOpen={addRoomModalOpen}
+        onClose={() => setAddRoomModalOpen(false)}
+        floors={floors}
+        defaultFloorId={selectedFloorId}
+        onSubmit={handleCreateRoom}
+      />
 
-            {errorMsg && (
-              <div className="p-3 rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/50 flex items-start gap-2 text-xs text-red-700 dark:text-red-400">
-                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                <span>{errorMsg}</span>
-              </div>
-            )}
+      <EditRoomModal
+        isOpen={editRoomModalOpen}
+        onClose={() => setEditRoomModalOpen(false)}
+        room={selectedRoom}
+        floors={floors}
+        onSubmit={handleUpdateRoom}
+      />
 
-            <form onSubmit={handleCreateRoom} className="space-y-4">
-              <div>
-                <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1">
-                  Property *
-                </label>
-                <select
-                  value={selectedPropertyId}
-                  onChange={(e) => setSelectedPropertyId(e.target.value)}
-                  required
-                  className="w-full py-2 px-3 text-xs rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-blue-600"
-                >
-                  {properties.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
+      <RoomDetailsModal
+        isOpen={roomDetailsModalOpen}
+        onClose={() => setRoomDetailsModalOpen(false)}
+        room={selectedRoom}
+        onEditRoom={(r) => {
+          setRoomDetailsModalOpen(false);
+          setSelectedRoom(r);
+          setEditRoomModalOpen(true);
+        }}
+        onAddBed={handleOpenAddBed}
+        onEditBed={handleOpenEditBed}
+        onChangeBedStatus={handleOpenBedStatus}
+        onDeleteBed={handleDeleteBed}
+        canManage={permissions.canCreateBed}
+      />
 
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1">
-                    Room Number *
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="e.g. 101"
-                    value={roomNumber}
-                    onChange={(e) => setRoomNumber(e.target.value)}
-                    required
-                    className="w-full py-2 px-3 text-xs rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-blue-600"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1">
-                    Room Type *
-                  </label>
-                  <select
-                    value={roomType}
-                    onChange={(e) => {
-                      const val = e.target.value as RoomType;
-                      setRoomType(val);
-                      if (val === "single") setBedCount(1);
-                      if (val === "shared") setBedCount(2);
-                      if (val === "dormitory") setBedCount(4);
-                    }}
-                    className="w-full py-2 px-3 text-xs rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-blue-600"
-                  >
-                    <option value="single">Single</option>
-                    <option value="shared">Shared (2 Sharing)</option>
-                    <option value="dormitory">Dormitory</option>
-                  </select>
-                </div>
-              </div>
+      <AddFloorModal
+        isOpen={addFloorModalOpen}
+        onClose={() => setAddFloorModalOpen(false)}
+        onSubmit={handleCreateFloor}
+        suggestedFloorNumber={floors.length}
+      />
 
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1">
-                    Number of Beds *
-                  </label>
-                  <input
-                    type="number"
-                    min={1}
-                    max={12}
-                    value={bedCount}
-                    onChange={(e) => setBedCount(Number(e.target.value))}
-                    required
-                    className="w-full py-2 px-3 text-xs rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-blue-600"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1">
-                    Rent / Bed (₹/month) *
-                  </label>
-                  <input
-                    type="number"
-                    min={0}
-                    step={500}
-                    value={monthlyRent}
-                    onChange={(e) => setMonthlyRent(Number(e.target.value))}
-                    required
-                    className="w-full py-2 px-3 text-xs rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-blue-600"
-                  />
-                </div>
-              </div>
+      <ManageFloorsModal
+        isOpen={manageFloorsModalOpen}
+        onClose={() => setManageFloorsModalOpen(false)}
+        floors={floors}
+        onUpdateFloor={handleUpdateFloor}
+        onDeleteFloor={handleDeleteFloor}
+        onOpenAddFloor={() => {
+          setManageFloorsModalOpen(false);
+          setAddFloorModalOpen(true);
+        }}
+      />
 
-              <div className="flex items-center justify-end gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setModalOpen(false)}
-                  className="px-3.5 py-2 rounded-xl text-xs font-medium text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800 cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={saving || !roomNumber.trim()}
-                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 cursor-pointer"
-                >
-                  {saving ? (
-                    <>
-                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      Creating...
-                    </>
-                  ) : (
-                    "Create Room & Beds"
-                  )}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
+      <BedModal
+        isOpen={bedModalOpen}
+        onClose={() => setBedModalOpen(false)}
+        room={selectedRoom}
+        bedToEdit={selectedBed}
+        mode={bedModalMode}
+        onSubmit={handleBedFormSubmit}
+      />
+
+      <BedStatusModal
+        isOpen={bedStatusModalOpen}
+        onClose={() => setBedStatusModalOpen(false)}
+        bed={selectedBed}
+        room={selectedRoom}
+        onConfirm={handleConfirmBedStatus}
+      />
     </div>
   );
 }
+
+export default function RoomsPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-[50vh] flex flex-col items-center justify-center gap-3">
+          <Loader2 className="w-8 h-8 text-blue-600 animate-spin" />
+          <p className="text-xs text-zinc-500">Loading room & bed inventory...</p>
+        </div>
+      }
+    >
+      <RoomsContent />
+    </Suspense>
+  );
+}
+
