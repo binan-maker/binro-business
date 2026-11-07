@@ -1,4 +1,4 @@
-import type { Database, UserRole, MemberStatus, PropertyStatus, RoomType, RoomStatus, BedStatus, PaymentMethod, TenantGender } from "./database.types";
+import type { Database, UserRole, MemberStatus, PropertyStatus, RoomType, RoomStatus, BedStatus, PaymentMethod, TenantGender, TenantStatus, OccupancyStatus } from "./database.types";
 
 export type Profile = Database["public"]["Tables"]["profiles"]["Row"];
 export type Business = Database["public"]["Tables"]["businesses"]["Row"];
@@ -121,6 +121,75 @@ export interface PropertyFilterOptions {
 }
 
 
+export interface OccupancyWithDetails extends Occupancy {
+  property_name?: string;
+  room_number?: string;
+  bed_number?: string;
+  floor_name?: string | null;
+}
+
+export interface TenantWithFullDetails extends Tenant {
+  current_occupancy: OccupancyWithDetails | null;
+  past_occupancies: OccupancyWithDetails[];
+  total_stays: number;
+}
+
+export interface TenantFilterOptions {
+  search?: string;
+  propertyId?: string; // "all" or specific property UUID
+  status?: "all" | "active" | "completed";
+  sortBy?: "name" | "created_at" | "check_in_date";
+  sortOrder?: "asc" | "desc";
+}
+
+export interface RegisterTenantPayload {
+  p_business_id: string;
+  p_property_id: string;
+  p_room_id: string;
+  p_bed_id: string;
+  p_full_name: string;
+  p_phone: string;
+  p_email?: string | null;
+  p_emergency_contact?: string | null;
+  p_emergency_contact_name?: string | null;
+  p_date_of_birth?: string | null;
+  p_gender?: TenantGender | null;
+  p_address?: string | null;
+  p_identity_type?: string | null;
+  p_identity_reference?: string | null;
+  p_tenant_notes?: string | null;
+  p_check_in_date?: string;
+  p_expected_check_out_date?: string | null;
+  p_monthly_rent?: number;
+  p_security_deposit?: number;
+  p_occupancy_notes?: string | null;
+}
+
+export interface UpdateTenantProfilePayload {
+  p_tenant_id: string;
+  p_full_name: string;
+  p_phone: string;
+  p_email?: string | null;
+  p_emergency_contact?: string | null;
+  p_emergency_contact_name?: string | null;
+  p_address?: string | null;
+}
+
+export interface CheckOutPayload {
+  occupancy_id: string;
+  tenant_id: string;
+  check_out_date: string;
+  notes?: string | null;
+}
+
+export interface TransferBedPayload {
+  occupancy_id: string;
+  current_bed_id: string;
+  new_room_id: string;
+  new_bed_id: string;
+  notes?: string | null;
+}
+
 export interface TenantWithStay extends Tenant {
   current_occupancy?: (Occupancy & {
     room?: Room;
@@ -186,4 +255,4 @@ export interface RecordPaymentPayload {
   }>;
 }
 
-export type { UserRole, MemberStatus, PropertyStatus, RoomType, RoomStatus, BedStatus, PaymentMethod, TenantGender };
+export type { UserRole, MemberStatus, PropertyStatus, RoomType, RoomStatus, BedStatus, PaymentMethod, TenantGender, TenantStatus, OccupancyStatus };
