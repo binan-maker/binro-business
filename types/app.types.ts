@@ -132,6 +132,12 @@ export interface TenantWithFullDetails extends Tenant {
   current_occupancy: OccupancyWithDetails | null;
   past_occupancies: OccupancyWithDetails[];
   total_stays: number;
+  property_name?: string;
+  occupancy?: (Occupancy & {
+    bed_number?: string;
+    room_number?: string;
+    property_name?: string;
+  }) | null;
 }
 
 export interface TenantFilterOptions {
@@ -187,6 +193,7 @@ export interface TransferBedPayload {
   current_bed_id: string;
   new_room_id: string;
   new_bed_id: string;
+  new_monthly_rent?: number;
   notes?: string | null;
 }
 

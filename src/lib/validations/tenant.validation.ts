@@ -18,7 +18,66 @@ export interface TenantValidationResult<T> {
 
 const VALID_GENDERS: TenantGender[] = ["male", "female", "other", "prefer_not_to_say"];
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const PHONE_CLEAN_REGEX = /[\s\-()+]/g;
+
+/**
+ * Normalizes Indian mobile phone numbers to standard E.164 format (+91XXXXXXXXXX).
+ * Accepts:
+ * - 10-digit mobile number: e.g. "9876543210" or "98765 43210" -> "+919876543210"
+ * - Number with +91: e.g. "+919876543210" or "+91 98765 43210" -> "+919876543210"
+ * - Number with 91 prefix: e.g. "919876543210" -> "+919876543210"
+ * - Number with 0 prefix: e.g. "09876543210" -> "+919876543210"
+ * Rejects numbers with non-10 digit local number or non-matching Indian mobile conventions.
+ */
+export function normalizeIndianPhone(phoneInput: string): {
+  valid: boolean;
+  phone: string;
+  error?: string;
+} {
+  if (!phoneInput || typeof phoneInput !== "string") {
+    return { valid: false, phone: "", error: "Mobile phone number is required." };
+  }
+
+  const trimmed = phoneInput.trim();
+  const stripped = trimmed.replace(/[\s\-\(\)\.]/g, "");
+
+  let digitsOnly = stripped;
+  if (stripped.startsWith("+")) {
+    digitsOnly = stripped.slice(1);
+  }
+
+  if (!/^\d+$/.test(digitsOnly)) {
+    return { valid: false, phone: trimmed, error: "Phone number contains invalid characters." };
+  }
+
+  let tenDigitNumber = "";
+
+  if (digitsOnly.length === 10) {
+    tenDigitNumber = digitsOnly;
+  } else if (digitsOnly.length === 11 && digitsOnly.startsWith("0")) {
+    tenDigitNumber = digitsOnly.slice(1);
+  } else if (digitsOnly.length === 12 && digitsOnly.startsWith("91")) {
+    tenDigitNumber = digitsOnly.slice(2);
+  } else {
+    return {
+      valid: false,
+      phone: trimmed,
+      error: "Please enter a valid 10-digit Indian mobile number.",
+    };
+  }
+
+  if (!/^[6-9]\d{9}$/.test(tenDigitNumber)) {
+    return {
+      valid: false,
+      phone: trimmed,
+      error: "Indian mobile numbers must be 10 digits starting with 6, 7, 8, or 9.",
+    };
+  }
+
+  return {
+    valid: true,
+    phone: `+91${tenDigitNumber}`,
+  };
+}
 
 /**
  * Validates complete registration and check-in input before calling the RPC.
@@ -51,11 +110,11 @@ export function validateRegisterTenantInput(
   }
 
   // 2. Phone number
-  const cleanPhone = phone.replace(PHONE_CLEAN_REGEX, "");
+  const phoneNorm = normalizeIndianPhone(phone);
   if (!phone) {
     errors.p_phone = "Mobile phone number is required.";
-  } else if (cleanPhone.length < 10 || cleanPhone.length > 15) {
-    errors.p_phone = "Please enter a valid phone number (at least 10 digits).";
+  } else if (!phoneNorm.valid) {
+    errors.p_phone = phoneNorm.error || "Please enter a valid 10-digit Indian mobile number.";
   }
 
   // 3. Email (optional)
@@ -117,7 +176,7 @@ export function validateRegisterTenantInput(
     sanitized: {
       ...input,
       p_full_name: fullName,
-      p_phone: phone,
+      p_phone: phoneNorm.valid ? phoneNorm.phone : phone,
       p_email: email,
       p_emergency_contact: emergencyContact,
       p_emergency_contact_name: emergencyContactName,
@@ -159,11 +218,11 @@ export function validateUpdateTenantProfileInput(
     errors.p_full_name = "Full name cannot exceed 100 characters.";
   }
 
-  const cleanPhone = phone.replace(PHONE_CLEAN_REGEX, "");
+  const phoneNorm = normalizeIndianPhone(phone);
   if (!phone) {
     errors.p_phone = "Mobile phone number is required.";
-  } else if (cleanPhone.length < 10 || cleanPhone.length > 15) {
-    errors.p_phone = "Please enter a valid phone number (at least 10 digits).";
+  } else if (!phoneNorm.valid) {
+    errors.p_phone = phoneNorm.error || "Please enter a valid 10-digit Indian mobile number.";
   }
 
   if (email && !EMAIL_REGEX.test(email)) {
@@ -180,7 +239,7 @@ export function validateUpdateTenantProfileInput(
     sanitized: {
       p_tenant_id: input.p_tenant_id,
       p_full_name: fullName,
-      p_phone: phone,
+      p_phone: phoneNorm.valid ? phoneNorm.phone : phone,
       p_email: email,
       p_emergency_contact: emergencyContact,
       p_emergency_contact_name: emergencyContactName,
@@ -242,6 +301,13 @@ export function validateTransferBedInput(
     errors.new_bed_id = "Destination bed is required.";
   } else if (input.new_bed_id === input.current_bed_id) {
     errors.new_bed_id = "Destination bed must be different from current bed.";
+  }
+
+  if (
+    input.new_monthly_rent !== undefined &&
+    (isNaN(input.new_monthly_rent) || input.new_monthly_rent < 0)
+  ) {
+    errors.new_monthly_rent = "New monthly rent must be a non-negative amount.";
   }
 
   return {
