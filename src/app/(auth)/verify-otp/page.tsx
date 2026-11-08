@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useRef, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
+import { businessService } from "@/services/business.service";
 import { Building2, ShieldCheck, AlertCircle, ArrowLeft, Loader2, CheckCircle2 } from "lucide-react";
 
 function VerifyOtpContent() {
@@ -122,8 +123,12 @@ function VerifyOtpContent() {
         }
         sessionStorage.setItem("binro_user_session", JSON.stringify({ phone, role: "owner" }));
         const hasBusiness = sessionStorage.getItem("binro_active_business");
+        const pendingDemoInvite = await businessService.getMyPendingInvitation();
+
         if (safeReturnUrl.startsWith("/invite/")) {
           router.push(safeReturnUrl);
+        } else if (pendingDemoInvite) {
+          router.push(`/invite/${pendingDemoInvite.id}`);
         } else if (hasBusiness) {
           router.push(safeReturnUrl);
         } else {
@@ -163,6 +168,13 @@ function VerifyOtpContent() {
           // Existing owner or assigned staff -> Destination
           router.push(safeReturnUrl);
         } else {
+          // Check if this user was invited as a staff warden to an existing business
+          const pendingInvite = await businessService.getMyPendingInvitation();
+          if (pendingInvite) {
+            router.push(`/invite/${pendingInvite.id}`);
+            return;
+          }
+
           // New owner onboarding -> Business creation
           router.push("/signup");
         }

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, Suspense } from "react";
+import React, { useState, useEffect, Suspense, useMemo } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { businessService } from "@/services/business.service";
@@ -15,7 +15,25 @@ import {
   Building,
   Phone,
   LogIn,
+  Check,
+  Copy,
+  Terminal,
+  MapPin,
 } from "lucide-react";
+
+interface InvitationInfo {
+  id: string;
+  business_id: string;
+  business_name: string;
+  property_id: string;
+  property_name: string;
+  invited_phone_masked: string;
+  invited_phone_normalized: string;
+  full_name: string | null;
+  status: string;
+  expires_at: string;
+  is_expired: boolean;
+}
 
 function InviteAcceptContent() {
   const params = useParams();
@@ -28,6 +46,9 @@ function InviteAcceptContent() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [currentUserPhone, setCurrentUserPhone] = useState<string | null>(null);
   const [currentUserEmail, setCurrentUserEmail] = useState<string | null>(null);
+  const [invitation, setInvitation] = useState<InvitationInfo | null>(null);
+  const [sqlCopied, setSqlCopied] = useState(false);
+
   const [status, setStatus] = useState<{
     type:
       | "idle"
@@ -37,6 +58,7 @@ function InviteAcceptContent() {
       | "already_member"
       | "no_phone"
       | "unauthenticated"
+      | "db_migration_needed"
       | "error";
     message: string;
   }>({
@@ -44,9 +66,31 @@ function InviteAcceptContent() {
     message: "",
   });
 
+  // Extract last 10 digits for accurate phone comparison
+  const user10Digits = useMemo(() => {
+    return (currentUserPhone || "").replace(/\D/g, "").slice(-10);
+  }, [currentUserPhone]);
+
+  const invited10Digits = useMemo(() => {
+    return (invitation?.invited_phone_normalized || "").replace(/\D/g, "").slice(-10);
+  }, [invitation?.invited_phone_normalized]);
+
+  const isPhoneMatch = useMemo(() => {
+    if (!user10Digits || !invited10Digits) return true; // neutral until loaded
+    return user10Digits === invited10Digits;
+  }, [user10Digits, invited10Digits]);
+
+  const formattedUserPhone = useMemo(() => {
+    if (!user10Digits || user10Digits.length < 10) return currentUserPhone || "";
+    return `+91 ${user10Digits.slice(0, 5)} ${user10Digits.slice(5)}`;
+  }, [user10Digits, currentUserPhone]);
+
   useEffect(() => {
-    async function checkAuth() {
+    async function loadData() {
       try {
+        setLoading(true);
+
+        // 1. Check user auth
         const { data: userData } = await supabase.auth.getUser();
         const user = userData?.user;
 
@@ -59,7 +103,7 @@ function InviteAcceptContent() {
             setCurrentUserEmail(user.email);
           }
         } else {
-          // Check if demo session exists
+          // Check demo session
           const demoSession = sessionStorage.getItem("binro_user_session");
           if (demoSession) {
             try {
@@ -75,16 +119,35 @@ function InviteAcceptContent() {
             setIsAuthenticated(false);
           }
         }
+
+        // 2. Fetch invitation details
+        if (invitationId) {
+          const details = await businessService.getStaffInvitationDetails(invitationId);
+          if (details) {
+            setInvitation(details);
+            if (details.status === "accepted") {
+              setStatus({
+                type: "already_member",
+                message: "This invitation has already been accepted! Redirecting to dashboard...",
+              });
+              setTimeout(() => router.push("/dashboard"), 2500);
+            } else if (details.is_expired) {
+              setStatus({
+                type: "expired",
+                message: "This invitation has expired. Please contact the property manager to issue a new one.",
+              });
+            }
+          }
+        }
       } catch (err) {
-        console.error("Auth check error:", err);
-        setIsAuthenticated(false);
+        console.error("Auth & Invite check error:", err);
       } finally {
         setLoading(false);
       }
     }
 
-    checkAuth();
-  }, [supabase]);
+    loadData();
+  }, [supabase, invitationId, router]);
 
   const handleSignInRedirect = () => {
     router.push(`/login?returnUrl=/invite/${encodeURIComponent(invitationId)}`);
@@ -105,10 +168,10 @@ function InviteAcceptContent() {
       await businessService.acceptStaffInvitation(invitationId);
       setStatus({
         type: "success",
-        message: "Invitation accepted successfully! Redirecting you to your hostel dashboard...",
+        message: "Invitation accepted successfully! Joining as Property Warden...",
       });
 
-      // Clear any cached active business so the newly accepted business is resolved
+      // Clear cached business/property so new warden membership is picked up
       sessionStorage.removeItem("binro_active_business");
       sessionStorage.removeItem("binro_active_property_id");
 
@@ -128,18 +191,26 @@ function InviteAcceptContent() {
 
       const lower = msg.toLowerCase();
 
-      if (lower.includes("permission denied") || lower.includes("authentication required")) {
+      if (lower.includes("phone_mismatch_raw") || lower.includes("different phone")) {
+        // If our client-side 10-digit check matches, then it's solely due to SQL unnormalized string equality
+        if (isPhoneMatch && user10Digits) {
+          setStatus({
+            type: "db_migration_needed",
+            message: `Your verified phone (${formattedUserPhone}) matches the invitation! However, the database enforces an exact string check (+91 prefix vs no + prefix). Please apply Migration 202611080010_normalize_phone_matching.sql to update the function.`,
+          });
+        } else {
+          setStatus({
+            type: "mismatch",
+            message:
+              "This invitation was sent to a different phone number than your currently signed-in account.",
+          });
+        }
+      } else if (lower.includes("permission denied") || lower.includes("authentication required")) {
         setIsAuthenticated(false);
         setStatus({
           type: "unauthenticated",
           message:
-            "A verified mobile login session is required to execute acceptance. Please sign in with your mobile OTP.",
-        });
-      } else if (lower.includes("different phone")) {
-        setStatus({
-          type: "mismatch",
-          message:
-            "This invitation was sent to a different phone number than your currently signed-in account.",
+            "A verified mobile login session is required. Please sign in with your mobile OTP.",
         });
       } else if (lower.includes("verified phone") || lower.includes("phone number is required")) {
         setStatus({
@@ -151,7 +222,7 @@ function InviteAcceptContent() {
         setStatus({
           type: "expired",
           message:
-            "This invitation has expired. Please contact the property manager or hostel owner to issue a fresh invitation link.",
+            "This invitation has expired. Please contact the property manager or hostel owner to issue a fresh link.",
         });
       } else if (lower.includes("already a member")) {
         setStatus({
@@ -184,6 +255,72 @@ function InviteAcceptContent() {
     handleSignInRedirect();
   };
 
+  const sqlSnippet = `-- Apply in Supabase Dashboard -> SQL Editor
+CREATE OR REPLACE FUNCTION public.normalize_phone_digits(raw_phone text)
+RETURNS text LANGUAGE sql IMMUTABLE AS $$
+    SELECT RIGHT(regexp_replace(COALESCE(raw_phone, ''), '\\D', '', 'g'), 10);
+$$;
+
+CREATE OR REPLACE FUNCTION public.accept_staff_invitation(target_invitation_id uuid)
+RETURNS uuid LANGUAGE plpgsql SECURITY DEFINER SET search_path = '' AS $function$
+DECLARE
+    v_user_id uuid := (SELECT auth.uid());
+    v_user_phone text;
+    v_user_email text;
+    v_invitation public.business_invitations%ROWTYPE;
+    v_property_id uuid;
+    v_member_id uuid;
+BEGIN
+    IF v_user_id IS NULL THEN RAISE EXCEPTION 'Authentication required'; END IF;
+    SELECT u.phone, u.email INTO v_user_phone, v_user_email FROM auth.users u WHERE u.id = v_user_id;
+    IF v_user_phone IS NULL THEN RAISE EXCEPTION 'A verified phone number is required'; END IF;
+
+    SELECT * INTO v_invitation FROM public.business_invitations WHERE id = target_invitation_id FOR UPDATE;
+    IF NOT FOUND THEN RAISE EXCEPTION 'Invitation not found'; END IF;
+    IF v_invitation.status <> 'pending' THEN RAISE EXCEPTION 'Invitation is no longer pending'; END IF;
+    IF v_invitation.expires_at <= pg_catalog.now() THEN
+        UPDATE public.business_invitations SET status = 'expired' WHERE id = target_invitation_id;
+        RETURN NULL;
+    END IF;
+
+    -- Match phone numbers using canonical 10-digit normalization
+    IF public.normalize_phone_digits(v_user_phone) <> public.normalize_phone_digits(v_invitation.phone) THEN
+        RAISE EXCEPTION 'Invitation belongs to a different phone number';
+    END IF;
+
+    SELECT p.id INTO v_property_id FROM public.properties p
+    WHERE p.id = v_invitation.property_id AND p.business_id = v_invitation.business_id AND p.status = 'active' FOR SHARE;
+    IF NOT FOUND THEN RAISE EXCEPTION 'Invited property is invalid or no longer active'; END IF;
+
+    INSERT INTO public.profiles (id, full_name, phone, email)
+    VALUES (v_user_id, v_invitation.full_name, '+91' || public.normalize_phone_digits(v_user_phone), v_user_email)
+    ON CONFLICT (id) DO UPDATE SET phone = COALESCE(public.profiles.phone, EXCLUDED.phone);
+
+    IF EXISTS (SELECT 1 FROM public.business_members WHERE business_id = v_invitation.business_id AND user_id = v_user_id) THEN
+        RAISE EXCEPTION 'You are already a member of this business';
+    END IF;
+
+    INSERT INTO public.business_members (business_id, user_id, role, status)
+    VALUES (v_invitation.business_id, v_user_id, 'warden', 'active') RETURNING id INTO v_member_id;
+
+    INSERT INTO public.property_staff (property_id, business_id, business_member_id)
+    VALUES (v_invitation.property_id, v_invitation.business_id, v_member_id)
+    ON CONFLICT (property_id, business_member_id) DO NOTHING;
+
+    UPDATE public.business_invitations SET status = 'accepted', accepted_by = v_user_id, accepted_at = pg_catalog.now()
+    WHERE id = target_invitation_id;
+
+    RETURN v_member_id;
+END; $function$;`;
+
+  const copySqlToClipboard = () => {
+    if (typeof navigator !== "undefined" && navigator.clipboard) {
+      navigator.clipboard.writeText(sqlSnippet);
+      setSqlCopied(true);
+      setTimeout(() => setSqlCopied(false), 2500);
+    }
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-zinc-50 dark:bg-zinc-950 font-sans">
@@ -195,7 +332,6 @@ function InviteAcceptContent() {
     );
   }
 
-  // If user is authenticated with email only (no verified mobile number)
   const isEmailOnly = isAuthenticated && !currentUserPhone && Boolean(currentUserEmail);
 
   return (
@@ -235,6 +371,36 @@ function InviteAcceptContent() {
             </div>
           )}
 
+          {/* Database migration needed helper banner */}
+          {status.type === "db_migration_needed" && (
+            <div className="mb-5 p-4 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 flex items-start gap-3 text-xs text-amber-900 dark:text-amber-200">
+              <Terminal className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+              <div className="space-y-2">
+                <p className="font-bold">Phone Number Confirmed (+91 {user10Digits})</p>
+                <p className="leading-relaxed">
+                  Your phone matches this invitation! In your Supabase database, run Migration 0010 to allow normalized phone comparison:
+                </p>
+                <button
+                  type="button"
+                  onClick={copySqlToClipboard}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-semibold text-xs transition-colors cursor-pointer"
+                >
+                  {sqlCopied ? (
+                    <>
+                      <Check className="w-3.5 h-3.5" />
+                      Copied SQL to Clipboard!
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="w-3.5 h-3.5" />
+                      Copy SQL Fix to Run in Supabase
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          )}
+
           {status.type === "unauthenticated" && (
             <div className="mb-5 p-4 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 flex items-start gap-3 text-xs text-amber-800 dark:text-amber-300">
               <LogIn className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
@@ -260,8 +426,13 @@ function InviteAcceptContent() {
                 <p className="font-semibold">Phone Number Mismatch</p>
                 <p className="mt-0.5">{status.message}</p>
                 <p className="mt-2 text-zinc-600 dark:text-zinc-400">
-                  Currently signed in with: <strong>{currentUserPhone}</strong>
+                  Currently signed in with: <strong>{formattedUserPhone || currentUserPhone}</strong>
                 </p>
+                {invitation?.invited_phone_masked && (
+                  <p className="mt-1 text-zinc-600 dark:text-zinc-400">
+                    Invitation was sent to: <strong>{invitation.invited_phone_masked}</strong>
+                  </p>
+                )}
                 <button
                   type="button"
                   onClick={handleSignOutAndSwitch}
@@ -311,8 +482,7 @@ function InviteAcceptContent() {
               <div>
                 <p className="font-semibold">Sign In to Accept</p>
                 <p className="mt-0.5">
-                  You need to sign in with your 10-digit Indian mobile number (+91) to cryptographically
-                  verify your phone against this invitation.
+                  Sign in with your 10-digit Indian mobile number to verify your access against this invitation.
                 </p>
                 <button
                   type="button"
@@ -351,34 +521,58 @@ function InviteAcceptContent() {
           {status.type !== "success" && (
             <>
               {/* Invitation Information Card */}
-              <div className="p-4 rounded-xl bg-zinc-50 dark:bg-zinc-800/60 border border-zinc-200 dark:border-zinc-700/60 mb-6">
+              <div className="p-4 rounded-xl bg-zinc-50 dark:bg-zinc-800/60 border border-zinc-200 dark:border-zinc-700/60 mb-6 space-y-3">
                 <div className="flex items-center gap-3">
                   <div className="w-10 h-10 rounded-xl bg-purple-100 dark:bg-purple-950/50 flex items-center justify-center text-purple-600 dark:text-purple-400 shrink-0">
                     <Building className="w-5 h-5" />
                   </div>
-                  <div>
-                    <h3 className="text-sm font-bold text-zinc-900 dark:text-zinc-100">
-                      Property Warden Role
+                  <div className="flex-1 min-w-0">
+                    <h3 className="text-sm font-bold text-zinc-900 dark:text-zinc-100 truncate">
+                      {invitation?.business_name || "Hostel Organization"}
                     </h3>
-                    <p className="text-xs text-zinc-500">
-                      Manage hostel rooms, tenant check-ins, and bed allocations.
+                    <p className="text-xs text-zinc-500 truncate flex items-center gap-1">
+                      <MapPin className="w-3 h-3 text-zinc-400 shrink-0" />
+                      {invitation?.property_name || "Assigned Hostel Property"}
                     </p>
                   </div>
                 </div>
 
-                <div className="mt-3 pt-3 border-t border-zinc-200 dark:border-zinc-700 text-xs text-zinc-600 dark:text-zinc-300 space-y-1.5">
+                <div className="pt-3 border-t border-zinc-200 dark:border-zinc-700 text-xs text-zinc-600 dark:text-zinc-300 space-y-2">
                   <div className="flex justify-between items-center">
-                    <span className="text-zinc-400">Account:</span>
-                    <span className="font-medium text-zinc-800 dark:text-zinc-200">
-                      {currentUserPhone ||
-                        currentUserEmail ||
-                        (isAuthenticated ? "Logged In" : "Not signed in")}
+                    <span className="text-zinc-400">Assigned Role:</span>
+                    <span className="font-bold text-purple-700 dark:text-purple-400 bg-purple-50 dark:bg-purple-950/50 px-2 py-0.5 rounded-md border border-purple-200 dark:border-purple-800">
+                      Property Warden
                     </span>
                   </div>
+
+                  {invitation?.invited_phone_masked && (
+                    <div className="flex justify-between items-center">
+                      <span className="text-zinc-400">Invited Number:</span>
+                      <span className="font-medium text-zinc-800 dark:text-zinc-200">
+                        {invitation.invited_phone_masked}
+                      </span>
+                    </div>
+                  )}
+
+                  <div className="flex justify-between items-center">
+                    <span className="text-zinc-400">Currently Signed In:</span>
+                    <div className="text-right">
+                      <span className="font-medium text-zinc-800 dark:text-zinc-200">
+                        {formattedUserPhone || currentUserEmail || (isAuthenticated ? "Logged In" : "Not signed in")}
+                      </span>
+                      {isAuthenticated && user10Digits && isPhoneMatch && (
+                        <span className="ml-1.5 inline-flex items-center text-[10px] text-emerald-600 dark:text-emerald-400 font-semibold">
+                          <Check className="w-3 h-3 inline mr-0.5" />
+                          Matched
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
                   <div className="flex justify-between items-center">
                     <span className="text-zinc-400">Access Scope:</span>
-                    <span className="font-medium text-purple-600 dark:text-purple-400">
-                      Assigned Property Only
+                    <span className="font-medium text-zinc-700 dark:text-zinc-300">
+                      {invitation?.property_name ? `${invitation.property_name} only` : "Assigned Property only"}
                     </span>
                   </div>
                 </div>
@@ -389,7 +583,12 @@ function InviteAcceptContent() {
                 <button
                   type="button"
                   onClick={handleAccept}
-                  disabled={accepting || status.type === "mismatch" || status.type === "expired"}
+                  disabled={
+                    accepting ||
+                    (!isPhoneMatch && Boolean(invited10Digits)) ||
+                    status.type === "expired" ||
+                    status.type === "already_member"
+                  }
                   className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 active:bg-blue-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm cursor-pointer"
                 >
                   {accepting ? (
@@ -441,7 +640,7 @@ function InviteAcceptContent() {
           <div className="mt-6 pt-5 border-t border-zinc-100 dark:border-zinc-800 text-center">
             <div className="flex items-center justify-center gap-1.5 text-xs text-zinc-500 dark:text-zinc-400">
               <ShieldCheck className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-              <span>Cryptographically verified with Postgres SMS OTP validation</span>
+              <span>Secured by Supabase Row-Level Security</span>
             </div>
           </div>
         </div>

@@ -266,6 +266,192 @@ export const businessService = {
   },
 
   /**
+   * Fetches public/safe details about a staff invitation for the acceptance screen.
+   */
+  async getStaffInvitationDetails(invitationId: string): Promise<{
+    id: string;
+    business_id: string;
+    business_name: string;
+    property_id: string;
+    property_name: string;
+    invited_phone_masked: string;
+    invited_phone_normalized: string;
+    full_name: string | null;
+    status: string;
+    expires_at: string;
+    is_expired: boolean;
+  } | null> {
+    const supabase = createClient();
+
+    // 1. Check demo mode first
+    const isExplicitDemo =
+      process.env.NODE_ENV !== "production" &&
+      (typeof window !== "undefined"
+        ? Boolean(sessionStorage.getItem("binro_user_session") || sessionStorage.getItem("binro_active_business") || sessionStorage.getItem("binro_demo_invitations"))
+        : false);
+
+    if (isExplicitDemo && typeof window !== "undefined") {
+      const demoList: BusinessInvitation[] = JSON.parse(
+        sessionStorage.getItem("binro_demo_invitations") || "[]"
+      );
+      const found = demoList.find((i) => i.id === invitationId);
+      if (found) {
+        const digits = (found.phone || "").replace(/\D/g, "").slice(-10);
+        const masked = digits.length === 10 ? `+91 ${digits.slice(0, 5)} *****` : "+91 ***** *****";
+        return {
+          id: found.id,
+          business_id: found.business_id,
+          business_name: "BinRo Demo Living",
+          property_id: found.property_id,
+          property_name: found.property_name || "Main Hostel Wing",
+          invited_phone_masked: masked,
+          invited_phone_normalized: `+91${digits}`,
+          full_name: found.full_name,
+          status: found.status,
+          expires_at: found.expires_at,
+          is_expired: new Date(found.expires_at) <= new Date(),
+        };
+      }
+    }
+
+    // 2. Try the secure get_staff_invitation_details RPC (Migration 0010)
+    try {
+      const { data, error } = await (supabase.rpc as unknown as (fn: string, args: Record<string, unknown>) => Promise<{ data: unknown[] | null; error: Error | null }>)(
+        "get_staff_invitation_details",
+        { target_invitation_id: invitationId }
+      );
+
+      if (!error && Array.isArray(data) && data.length > 0) {
+        const row = data[0] as {
+          id: string;
+          business_id: string;
+          business_name: string;
+          property_id: string;
+          property_name: string;
+          invited_phone_masked: string;
+          invited_phone_normalized: string;
+          full_name: string | null;
+          status: string;
+          expires_at: string;
+          is_expired: boolean;
+        };
+        return row;
+      }
+    } catch {
+      // RPC might not be deployed yet, fallback to direct query if permitted
+    }
+
+    // 3. Fallback direct select
+    try {
+      const { data: inv } = await supabase
+        .from("business_invitations")
+        .select("id, business_id, property_id, phone, full_name, status, expires_at")
+        .eq("id", invitationId)
+        .maybeSingle();
+
+      if (inv) {
+        const [bizRes, propRes] = await Promise.all([
+          supabase.from("businesses").select("name").eq("id", inv.business_id).maybeSingle(),
+          supabase.from("properties").select("name").eq("id", inv.property_id).maybeSingle(),
+        ]);
+
+        const digits = (inv.phone || "").replace(/\D/g, "").slice(-10);
+        const masked = digits.length === 10 ? `+91 ${digits.slice(0, 5)} *****` : "+91 ***** *****";
+
+        return {
+          id: inv.id,
+          business_id: inv.business_id,
+          business_name: bizRes.data?.name || "Hostel Organization",
+          property_id: inv.property_id,
+          property_name: propRes.data?.name || "Assigned Property",
+          invited_phone_masked: masked,
+          invited_phone_normalized: `+91${digits}`,
+          full_name: inv.full_name,
+          status: inv.status,
+          expires_at: inv.expires_at,
+          is_expired: new Date(inv.expires_at) <= new Date(),
+        };
+      }
+    } catch {
+      // ignore
+    }
+
+    return null;
+  },
+
+  /**
+   * Discovers any pending staff invitation for the current authenticated user.
+   * Enables automatic routing for invited wardens without asking them to create a business.
+   */
+  async getMyPendingInvitation(): Promise<{
+    id: string;
+    business_id: string;
+    business_name: string;
+    property_id: string;
+    property_name: string;
+    full_name: string | null;
+  } | null> {
+    const supabase = createClient();
+
+    // Check demo mode first
+    const isExplicitDemo =
+      process.env.NODE_ENV !== "production" &&
+      (typeof window !== "undefined"
+        ? Boolean(sessionStorage.getItem("binro_user_session") || sessionStorage.getItem("binro_demo_invitations"))
+        : false);
+
+    if (isExplicitDemo && typeof window !== "undefined") {
+      const sessionStr = sessionStorage.getItem("binro_user_session");
+      const phoneDigits = sessionStr
+        ? (JSON.parse(sessionStr).phone || "").replace(/\D/g, "").slice(-10)
+        : "";
+
+      const demoList: BusinessInvitation[] = JSON.parse(
+        sessionStorage.getItem("binro_demo_invitations") || "[]"
+      );
+
+      const found = demoList.find(
+        (i) =>
+          i.status === "pending" &&
+          (i.phone.replace(/\D/g, "").slice(-10) === phoneDigits || !phoneDigits)
+      );
+
+      if (found) {
+        return {
+          id: found.id,
+          business_id: found.business_id,
+          business_name: "BinRo Demo Hostel",
+          property_id: found.property_id,
+          property_name: found.property_name || "Assigned Property",
+          full_name: found.full_name,
+        };
+      }
+    }
+
+    try {
+      const { data, error } = await (supabase.rpc as unknown as (fn: string) => Promise<{ data: unknown[] | null; error: Error | null }>)(
+        "get_my_pending_invitations"
+      );
+
+      if (!error && Array.isArray(data) && data.length > 0) {
+        const row = data[0] as {
+          id: string;
+          business_id: string;
+          business_name: string;
+          property_id: string;
+          property_name: string;
+          full_name: string | null;
+        };
+        return row;
+      }
+    } catch {
+      // ignore
+    }
+
+    return null;
+  },
+
+  /**
    * Accepts a pending staff invitation for the current authenticated user.
    * Calls the secure accept_staff_invitation RPC.
    */
@@ -339,6 +525,14 @@ export const businessService = {
           : typeof errObj.details === "string"
           ? errObj.details
           : "Failed to accept invitation.";
+
+      // Check if this was caused by the unnormalized phone matching in migration 0009
+      if (errMessage.toLowerCase().includes("different phone")) {
+        throw new Error(
+          "PHONE_MISMATCH_RAW: Invitation belongs to a different phone format or unnormalized record. If your phone matches, Migration 202611080010_normalize_phone_matching.sql must be applied in Supabase."
+        );
+      }
+
       throw new Error(errMessage);
     }
 

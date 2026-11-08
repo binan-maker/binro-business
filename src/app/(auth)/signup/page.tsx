@@ -1,9 +1,11 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
-import { Building2, User, Mail, ArrowRight, AlertCircle, Loader2, CheckCircle2 } from "lucide-react";
+import { businessService } from "@/services/business.service";
+import { Building2, User, Mail, ArrowRight, AlertCircle, Loader2, CheckCircle2, ShieldCheck } from "lucide-react";
 
 export default function SignupPage() {
   const router = useRouter();
@@ -14,6 +16,11 @@ export default function SignupPage() {
   const [email, setEmail] = useState("");
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [pendingInvitation, setPendingInvitation] = useState<{
+    id: string;
+    business_name: string;
+    property_name: string;
+  } | null>(null);
 
   useEffect(() => {
     async function checkAuth() {
@@ -23,7 +30,18 @@ export default function SignupPage() {
         const stored = sessionStorage.getItem("binro_auth_phone");
         if (!stored) {
           router.replace("/login");
+          return;
         }
+      }
+
+      // Check if user has a pending warden invitation
+      try {
+        const pending = await businessService.getMyPendingInvitation();
+        if (pending) {
+          setPendingInvitation(pending);
+        }
+      } catch {
+        // ignore
       }
     }
     checkAuth();
@@ -122,6 +140,29 @@ export default function SignupPage() {
 
       <div className="mt-8 sm:mx-auto sm:w-full sm:max-w-md">
         <div className="bg-white dark:bg-zinc-900 py-8 px-6 shadow-sm border border-zinc-200 dark:border-zinc-800 rounded-2xl sm:px-10">
+          {pendingInvitation && (
+            <div className="mb-6 p-4 rounded-xl bg-purple-50 dark:bg-purple-950/40 border border-purple-200 dark:border-purple-800 space-y-2.5">
+              <div className="flex items-start gap-2.5">
+                <ShieldCheck className="w-5 h-5 text-purple-600 shrink-0 mt-0.5" />
+                <div className="flex-1 min-w-0">
+                  <p className="font-bold text-xs text-purple-900 dark:text-purple-200">
+                    Property Warden Invitation Waiting
+                  </p>
+                  <p className="text-xs text-purple-800 dark:text-purple-300 mt-0.5">
+                    You have been invited to join <strong>{pendingInvitation.business_name}</strong> ({pendingInvitation.property_name}) as a Warden. You don&apos;t need to create a new business.
+                  </p>
+                </div>
+              </div>
+              <Link
+                href={`/invite/${pendingInvitation.id}`}
+                className="w-full inline-flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg bg-purple-600 hover:bg-purple-700 text-white font-semibold text-xs transition-colors cursor-pointer"
+              >
+                <span>Accept Warden Invitation Instead</span>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </Link>
+            </div>
+          )}
+
           {errorMsg && (
             <div className="mb-5 p-3.5 rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/50 flex items-start gap-2.5 text-xs text-red-700 dark:text-red-400">
               <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
