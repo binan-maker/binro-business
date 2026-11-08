@@ -1,4 +1,4 @@
-import type { Database, UserRole, MemberStatus, PropertyStatus, RoomType, RoomStatus, BedStatus, PaymentMethod, TenantGender, TenantStatus, OccupancyStatus } from "./database.types";
+import type { Database, UserRole, MemberStatus, PropertyStatus, RoomType, RoomStatus, BedStatus, PaymentMethod, PaymentStatus, RentChargeStatus, TenantGender, TenantStatus, OccupancyStatus } from "./database.types";
 
 export type Profile = Database["public"]["Tables"]["profiles"]["Row"];
 export type Business = Database["public"]["Tables"]["businesses"]["Row"];
@@ -246,20 +246,56 @@ export interface CheckInPayload {
   notes?: string | null;
 }
 
+export interface CreateRentChargePayload {
+  business_id: string;
+  property_id: string;
+  tenant_id: string;
+  occupancy_id: string;
+  period_start: string;
+  period_end: string;
+  due_date: string;
+  amount: number; // in paise
+  description?: string | null;
+  notes?: string | null;
+}
+
+export interface PaymentAllocationItem {
+  rent_charge_id: string;
+  allocated_amount: number; // in paise
+}
+
+export interface RentFilterOptions {
+  propertyId?: string; // "all" or specific property UUID
+  status?: RentChargeStatus | "all" | "overdue";
+  search?: string;
+  periodStart?: string;
+  periodEnd?: string;
+  sortBy?: "due_date" | "created_at" | "amount" | "tenant_name";
+  sortOrder?: "asc" | "desc";
+}
+
+export interface PaymentFilterOptions {
+  propertyId?: string; // "all" or specific property UUID
+  method?: PaymentMethod | "all";
+  status?: PaymentStatus | "all";
+  search?: string;
+  startDate?: string;
+  endDate?: string;
+  sortBy?: "paid_at" | "amount" | "created_at";
+  sortOrder?: "asc" | "desc";
+}
+
 export interface RecordPaymentPayload {
   business_id: string;
   property_id: string;
   tenant_id: string;
-  amount: number;
+  amount: number; // in paise
   payment_method: PaymentMethod;
   transaction_reference?: string | null;
   notes?: string | null;
   paid_at?: string;
   auto_allocate?: boolean;
-  allocations?: Array<{
-    rent_charge_id: string;
-    allocated_amount: number;
-  }>;
+  allocations?: PaymentAllocationItem[];
 }
 
 export interface BusinessInvitation {
@@ -279,4 +315,5 @@ export interface BusinessInvitation {
   inviter_name?: string;
 }
 
-export type { UserRole, MemberStatus, PropertyStatus, RoomType, RoomStatus, BedStatus, PaymentMethod, TenantGender, TenantStatus, OccupancyStatus };
+export type { UserRole, MemberStatus, PropertyStatus, RoomType, RoomStatus, BedStatus, PaymentMethod, PaymentStatus, RentChargeStatus, TenantGender, TenantStatus, OccupancyStatus };
+

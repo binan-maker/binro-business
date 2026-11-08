@@ -6,6 +6,7 @@ import {
   paymentService,
   type PaymentWithTenant,
   type PaymentStats,
+  type PaymentAllocationDetail,
 } from "@/services/payment.service";
 import { tenantService, type TenantWithOccupancyInfo } from "@/services/tenant.service";
 import { rentService, type RentChargeWithTenant } from "@/services/rent.service";
@@ -21,7 +22,11 @@ import {
   X,
   IndianRupee,
   Calendar,
+  Layers,
+  Trash2,
+  AlertCircle,
 } from "lucide-react";
+import type { PaymentPermissions } from "@/lib/permissions/payment.permissions";
 
 export default function PaymentsPage() {
   const [loading, setLoading] = useState(true);
@@ -30,12 +35,21 @@ export default function PaymentsPage() {
   const [stats, setStats] = useState<PaymentStats | null>(null);
   const [tenants, setTenants] = useState<TenantWithOccupancyInfo[]>([]);
   const [pendingCharges, setPendingCharges] = useState<RentChargeWithTenant[]>([]);
+  const [permissions, setPermissions] = useState<PaymentPermissions | null>(null);
 
   // Search and filter
   const [searchQuery, setSearchQuery] = useState("");
   const [methodFilter, setMethodFilter] = useState<string>("all");
 
-  // Modal State
+  // Allocation Management Modal State
+  const [manageModalOpen, setManageModalOpen] = useState(false);
+  const [selectedPaymentForManage, setSelectedPaymentForManage] = useState<PaymentWithTenant | null>(null);
+  const [allocationsList, setAllocationsList] = useState<PaymentAllocationDetail[]>([]);
+  const [loadingAllocations, setLoadingAllocations] = useState(false);
+  const [deletingAllocId, setDeletingAllocId] = useState<string | null>(null);
+  const [manageError, setManageError] = useState<string | null>(null);
+
+  // Record Payment Modal State
   const [modalOpen, setModalOpen] = useState(false);
   const [selectedTenantId, setSelectedTenantId] = useState("");
   const [amountRupees, setAmountRupees] = useState<number | string>(8500);
@@ -49,6 +63,7 @@ export default function PaymentsPage() {
   const [saving, setSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
+
   const loadData = useCallback(async () => {
     try {
       const biz = await businessService.getActiveBusiness();
@@ -58,20 +73,23 @@ export default function PaymentsPage() {
       }
       setBusinessId(biz.id);
 
-      const [paymentsList, paymentStats, allTenants, allCharges] = await Promise.all([
+      const [paymentsList, paymentStats, allTenants, allCharges, userPerms] = await Promise.all([
         paymentService.getPayments(biz.id),
         paymentService.getPaymentStats(biz.id),
         tenantService.getTenantsByBusiness(biz.id),
         rentService.getRentCharges(biz.id),
+        paymentService.getUserPaymentPermissions(biz.id),
       ]);
 
       setPayments(paymentsList);
       setStats(paymentStats);
       setTenants(allTenants);
+      setPermissions(userPerms.permissions);
 
       // Filter charges that have pending amount
       const unpaid = allCharges.filter((c) => c.status === "pending" || c.status === "partially_paid");
       setPendingCharges(unpaid);
+
 
       if (allTenants.length > 0 && !selectedTenantId) {
         setSelectedTenantId(allTenants[0].id);
@@ -177,6 +195,41 @@ export default function PaymentsPage() {
       setSaving(false);
     }
   };
+
+  const handleOpenManageModal = async (p: PaymentWithTenant) => {
+    setManageError(null);
+    setSelectedPaymentForManage(p);
+    setManageModalOpen(true);
+    setLoadingAllocations(true);
+    try {
+      const list = await paymentService.getPaymentAllocations(p.id);
+      setAllocationsList(list);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to load payment allocations.";
+      setManageError(msg);
+    } finally {
+      setLoadingAllocations(false);
+    }
+  };
+
+  const handleRemoveAllocation = async (allocationId: string) => {
+    if (!selectedPaymentForManage) return;
+    setDeletingAllocId(allocationId);
+    setManageError(null);
+
+    try {
+      await paymentService.removePaymentAllocation(allocationId);
+      const updated = await paymentService.getPaymentAllocations(selectedPaymentForManage.id);
+      setAllocationsList(updated);
+      await loadData();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to remove payment allocation.";
+      setManageError(msg);
+    } finally {
+      setDeletingAllocId(null);
+    }
+  };
+
 
   const filteredPayments = payments.filter((p) => {
     const matchesSearch =
@@ -328,6 +381,7 @@ export default function PaymentsPage() {
                   <th className="py-3 px-4">Date & Time</th>
                   <th className="py-3 px-4">Rent Allocation</th>
                   <th className="py-3 px-4">Status</th>
+                  <th className="py-3 px-4 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
@@ -371,17 +425,20 @@ export default function PaymentsPage() {
                       })}
                     </td>
                     <td className="py-3.5 px-4 text-zinc-700 dark:text-zinc-300">
-                      <span
-                        className={`inline-block px-2 py-0.5 rounded-md text-[11px] font-medium ${
+                      <button
+                        type="button"
+                        onClick={() => handleOpenManageModal(p)}
+                        className={`inline-block px-2 py-0.5 rounded-md text-[11px] font-medium hover:opacity-80 transition-opacity cursor-pointer ${
                           p.allocations_summary?.includes("Fully")
                             ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400"
                             : p.allocations_summary?.includes("Partially")
                             ? "bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-400"
                             : "bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400"
                         }`}
+                        title="Click to view allocations"
                       >
                         {p.allocations_summary}
-                      </span>
+                      </button>
                     </td>
                     <td className="py-3.5 px-4">
                       <span className="inline-flex items-center gap-1 text-[11px] text-emerald-600 dark:text-emerald-400 font-medium">
@@ -389,8 +446,20 @@ export default function PaymentsPage() {
                         Received
                       </span>
                     </td>
+                    <td className="py-3.5 px-4 text-right">
+                      <button
+                        type="button"
+                        onClick={() => handleOpenManageModal(p)}
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold text-zinc-600 hover:text-blue-600 dark:text-zinc-400 dark:hover:text-blue-400 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
+                        title="View & manage allocations"
+                      >
+                        <Layers className="w-3.5 h-3.5" />
+                        Allocations
+                      </button>
+                    </td>
                   </tr>
                 ))}
+
               </tbody>
             </table>
           </div>
@@ -574,6 +643,185 @@ export default function PaymentsPage() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Manage Allocations Modal */}
+      {manageModalOpen && selectedPaymentForManage && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-xs">
+          <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-2xl max-w-xl w-full p-6 shadow-2xl relative max-h-[90vh] overflow-y-auto">
+            <button
+              onClick={() => {
+                setManageModalOpen(false);
+                setSelectedPaymentForManage(null);
+                setManageError(null);
+              }}
+              className="absolute right-4 top-4 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="mb-4">
+              <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-400 mb-2">
+                <Layers className="w-3.5 h-3.5" />
+                Ledger Allocations
+              </div>
+              <h2 className="text-lg font-bold text-zinc-900 dark:text-zinc-100">
+                Manage Payment Allocations
+              </h2>
+              <p className="text-xs text-zinc-500">
+                View or adjust how this receipt is credited against outstanding rent charges.
+              </p>
+            </div>
+
+            {/* Payment Summary Box */}
+            <div className="p-3.5 rounded-xl bg-zinc-50 dark:bg-zinc-800/50 border border-zinc-200 dark:border-zinc-800 space-y-2 mb-4 text-xs">
+              <div className="flex items-center justify-between">
+                <div>
+                  <span className="font-semibold text-zinc-900 dark:text-zinc-100">
+                    {selectedPaymentForManage.tenant_name}
+                  </span>
+                  <span className="text-zinc-400 ml-2">({selectedPaymentForManage.property_name})</span>
+                </div>
+                <div className="text-sm font-bold text-emerald-600 dark:text-emerald-400">
+                  ₹{Math.round(selectedPaymentForManage.amount / 100).toLocaleString("en-IN")}
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-zinc-500 text-[11px]">
+                <span className="uppercase font-semibold text-zinc-600 dark:text-zinc-300">
+                  Method: {selectedPaymentForManage.payment_method.replace("_", " ")}
+                </span>
+                <span>
+                  Ref: {selectedPaymentForManage.transaction_reference || "None"}
+                </span>
+                <span>
+                  Date: {new Date(selectedPaymentForManage.paid_at).toLocaleDateString("en-IN", {
+                    day: "2-digit",
+                    month: "short",
+                    year: "numeric",
+                  })}
+                </span>
+              </div>
+            </div>
+
+            {manageError && (
+              <div className="mb-4 p-3 rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400 text-xs flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                <span>{manageError}</span>
+              </div>
+            )}
+
+            {loadingAllocations ? (
+              <div className="py-12 flex flex-col items-center justify-center gap-2 text-zinc-400">
+                <Loader2 className="w-5 h-5 animate-spin text-blue-600" />
+                <p className="text-xs">Fetching allocation records...</p>
+              </div>
+            ) : allocationsList.length === 0 ? (
+              <div className="py-8 text-center text-zinc-500 border border-dashed border-zinc-200 dark:border-zinc-800 rounded-xl">
+                <p className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
+                  No allocations found for this payment
+                </p>
+                <p className="text-[11px] text-zinc-400 mt-1">
+                  This entire receipt currently remains unallocated credit.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <div className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
+                  Linked Rent Charges ({allocationsList.length})
+                </div>
+
+                <div className="space-y-2">
+                  {allocationsList.map((alloc) => {
+                    const rc = alloc.rent_charge;
+                    const allocatedRupees = Math.round(alloc.allocated_amount / 100);
+                    const totalPaise = rc?.amount || 0;
+                    const isDeleting = deletingAllocId === alloc.id;
+
+                    return (
+                      <div
+                        key={alloc.id}
+                        className="p-3 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-800/40 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
+                      >
+                        <div className="space-y-1">
+                          <div className="font-semibold text-zinc-900 dark:text-zinc-100 flex items-center gap-2">
+                            <span>
+                              {rc?.description || `Rent period ${rc?.period_start} to ${rc?.period_end}`}
+                            </span>
+                            {rc?.status && (
+                              <span
+                                className={`px-2 py-0.5 rounded text-[10px] font-semibold uppercase ${
+                                  rc.status === "paid"
+                                    ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400"
+                                    : rc.status === "partially_paid"
+                                    ? "bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400"
+                                    : "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400"
+                                }`}
+                              >
+                                {rc.status.replace("_", " ")}
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-[11px] text-zinc-400">
+                            Bill Total: ₹{Math.round(totalPaise / 100).toLocaleString("en-IN")} • Allocated:{" "}
+                            <span className="font-bold text-zinc-700 dark:text-zinc-200">
+                              ₹{allocatedRupees.toLocaleString("en-IN")}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2 sm:self-center">
+                          {permissions?.canRemoveAllocation ? (
+                            <button
+                              type="button"
+                              disabled={isDeleting}
+                              onClick={() => handleRemoveAllocation(alloc.id)}
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/40 border border-red-200 dark:border-red-900 transition-colors cursor-pointer disabled:opacity-50"
+                              title="Remove this allocation to revert rent status"
+                            >
+                              {isDeleting ? (
+                                <>
+                                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                  Removing...
+                                </>
+                              ) : (
+                                <>
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                  Remove Allocation
+                                </>
+                              )}
+                            </button>
+                          ) : (
+                            <span className="text-[11px] text-zinc-400 italic">
+                              Owner/Admin only
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div className="p-3 rounded-xl bg-amber-50/60 dark:bg-amber-950/20 border border-amber-200/60 dark:border-amber-900/40 text-[11px] text-amber-800 dark:text-amber-300">
+                  <span className="font-semibold">Ledger Recalculation Note:</span> Removing an allocation automatically decrements the rent charge&apos;s amount paid and returns its status to pending or partially paid. The payment receipt itself remains securely recorded in your ledger.
+                </div>
+              </div>
+            )}
+
+            <div className="flex items-center justify-end pt-4 mt-4 border-t border-zinc-100 dark:border-zinc-800">
+              <button
+                type="button"
+                onClick={() => {
+                  setManageModalOpen(false);
+                  setSelectedPaymentForManage(null);
+                  setManageError(null);
+                }}
+                className="px-4 py-2 rounded-xl text-xs font-medium text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
+              >
+                Close
+              </button>
+            </div>
           </div>
         </div>
       )}

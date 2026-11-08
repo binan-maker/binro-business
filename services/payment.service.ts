@@ -1,10 +1,32 @@
 import { createClient } from "@/lib/supabase/client";
-import type { Payment, RecordPaymentPayload } from "@/types/app.types";
+import type { Payment, RecordPaymentPayload, UserRole } from "@/types/app.types";
+import { getPaymentPermissions, type PaymentPermissions } from "@/lib/permissions/payment.permissions";
+import { isValidId } from "@/lib/validations/payment.validation";
 
 export interface PaymentWithTenant extends Payment {
   tenant_name?: string;
   property_name?: string;
   allocations_summary?: string;
+}
+
+export interface PaymentAllocationDetail {
+  id: string;
+  payment_id: string;
+  rent_charge_id: string;
+  business_id: string;
+  property_id: string;
+  tenant_id: string;
+  allocated_amount: number;
+  created_at: string;
+  rent_charge?: {
+    id: string;
+    period_start: string;
+    period_end: string;
+    amount: number;
+    amount_paid: number;
+    status: string;
+    description?: string | null;
+  };
 }
 
 export interface PaymentStats {
@@ -26,6 +48,72 @@ export interface PaymentStats {
 }
 
 export const paymentService = {
+  async getUserPaymentPermissions(businessId: string): Promise<{
+    role: UserRole | null;
+    permissions: PaymentPermissions;
+    userId: string | null;
+    assignedPropertyIds: string[] | null;
+  }> {
+    const supabase = createClient();
+    const { data: userData } = await supabase.auth.getUser();
+    const user = userData?.user;
+
+    if (!user) {
+      const permissions = getPaymentPermissions(null, null);
+      return { role: null, permissions, userId: null, assignedPropertyIds: null };
+    }
+
+    const { data: members, error: memError } = await supabase
+      .from("business_members")
+      .select("id, role, status")
+      .eq("business_id", businessId)
+      .eq("user_id", user.id)
+      .eq("status", "active")
+      .limit(1);
+
+    let role: UserRole | null = null;
+    let memberId: string | null = null;
+
+    if (!memError && members && members.length > 0) {
+      role = members[0].role as UserRole;
+      memberId = members[0].id;
+    } else {
+      const { data: biz } = await supabase
+        .from("businesses")
+        .select("id, owner_user_id")
+        .eq("id", businessId)
+        .eq("owner_user_id", user.id)
+        .maybeSingle();
+
+      if (biz) {
+        role = "owner";
+      }
+    }
+
+    if (!role) {
+      const permissions = getPaymentPermissions(null, null);
+      return { role: null, permissions, userId: user.id, assignedPropertyIds: null };
+    }
+
+    let assignedPropertyIds: string[] | null = null;
+    if (role === "warden" && memberId) {
+      const { data: staffRows } = await supabase
+        .from("property_staff")
+        .select("property_id")
+        .eq("business_member_id", memberId);
+
+      assignedPropertyIds = (staffRows || []).map((r) => r.property_id);
+    }
+
+    const permissions = getPaymentPermissions(role, assignedPropertyIds);
+    return {
+      role,
+      permissions,
+      userId: user.id,
+      assignedPropertyIds,
+    };
+  },
+
   async getPayments(businessId: string): Promise<PaymentWithTenant[]> {
     const supabase = createClient();
     const { data: payments, error } = await supabase
@@ -130,7 +218,9 @@ export const paymentService = {
 
       if (allocError) {
         console.error("Payment allocation error:", allocError.message);
+        throw new Error(allocError.message || "Failed to allocate payment to rent bill.");
       }
+
     }
 
     return payment as Payment;
@@ -195,4 +285,95 @@ export const paymentService = {
 
     return stats;
   },
+
+  async getPaymentAllocations(paymentId: string): Promise<PaymentAllocationDetail[]> {
+    if (!isValidId(paymentId)) return [];
+
+    const supabase = createClient();
+    const { data: allocs, error } = await supabase
+      .from("payment_allocations")
+      .select(`
+        id,
+        payment_id,
+        rent_charge_id,
+        business_id,
+        property_id,
+        tenant_id,
+        allocated_amount,
+        created_at,
+        rent_charges (
+          id,
+          period_start,
+          period_end,
+          amount,
+          amount_paid,
+          status,
+          description
+        )
+      `)
+      .eq("payment_id", paymentId)
+      .order("created_at", { ascending: true });
+
+    if (error || !allocs) return [];
+
+    interface RawAllocationItem {
+      id: string;
+      payment_id: string;
+      rent_charge_id: string;
+      business_id: string;
+      property_id: string;
+      tenant_id: string;
+      allocated_amount: number | string;
+      created_at: string;
+      rent_charges?: {
+        id: string;
+        period_start: string;
+        period_end: string;
+        amount: number;
+        amount_paid: number;
+        status: string;
+        description?: string | null;
+      } | {
+        id: string;
+        period_start: string;
+        period_end: string;
+        amount: number;
+        amount_paid: number;
+        status: string;
+        description?: string | null;
+      }[] | null;
+    }
+
+    return (allocs as unknown as RawAllocationItem[]).map((a) => {
+      const rc = Array.isArray(a.rent_charges) ? a.rent_charges[0] : a.rent_charges;
+      return {
+        id: a.id,
+        payment_id: a.payment_id,
+        rent_charge_id: a.rent_charge_id,
+        business_id: a.business_id,
+        property_id: a.property_id,
+        tenant_id: a.tenant_id,
+        allocated_amount: Number(a.allocated_amount),
+        created_at: a.created_at,
+        rent_charge: rc || undefined,
+      };
+    });
+  },
+
+  async removePaymentAllocation(allocationId: string): Promise<void> {
+    if (!isValidId(allocationId)) {
+      throw new Error("Invalid allocation identifier.");
+    }
+
+    const supabase = createClient();
+    const { error } = await supabase
+      .from("payment_allocations")
+      .delete()
+      .eq("id", allocationId);
+
+    if (error) {
+      throw new Error(error.message || "Failed to remove payment allocation.");
+    }
+  },
 };
+
