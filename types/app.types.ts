@@ -262,4 +262,21 @@ export interface RecordPaymentPayload {
   }>;
 }
 
+export interface BusinessInvitation {
+  id: string;
+  business_id: string;
+  property_id: string;
+  phone: string;
+  full_name: string | null;
+  invited_by_member_id: string;
+  status: "pending" | "accepted" | "cancelled" | "expired";
+  expires_at: string;
+  accepted_by?: string | null;
+  accepted_at?: string | null;
+  created_at: string;
+  updated_at?: string;
+  property_name?: string;
+  inviter_name?: string;
+}
+
 export type { UserRole, MemberStatus, PropertyStatus, RoomType, RoomStatus, BedStatus, PaymentMethod, TenantGender, TenantStatus, OccupancyStatus };

@@ -126,6 +126,51 @@ export type Database = {
           }
         ];
       };
+      business_invitations: {
+        Row: {
+          id: string;
+          business_id: string;
+          property_id: string;
+          phone: string;
+          full_name: string | null;
+          invited_by_member_id: string;
+          status: "pending" | "accepted" | "cancelled" | "expired";
+          expires_at: string;
+          accepted_by: string | null;
+          accepted_at: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          business_id: string;
+          property_id: string;
+          phone: string;
+          full_name?: string | null;
+          invited_by_member_id: string;
+          status?: "pending" | "accepted" | "cancelled" | "expired";
+          expires_at?: string;
+          accepted_by?: string | null;
+          accepted_at?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          business_id?: string;
+          property_id?: string;
+          phone?: string;
+          full_name?: string | null;
+          invited_by_member_id?: string;
+          status?: "pending" | "accepted" | "cancelled" | "expired";
+          expires_at?: string;
+          accepted_by?: string | null;
+          accepted_at?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
       properties: {
         Row: {
           id: string;
@@ -527,7 +572,22 @@ export type Database = {
       [_ in never]: never;
     };
     Functions: {
-      [_ in never]: never;
+      create_staff_invitation: {
+        Args: {
+          target_business_id: string;
+          target_property_id: string;
+          target_phone: string;
+          target_full_name?: string | null;
+          target_expires_in_days?: number;
+        };
+        Returns: string;
+      };
+      accept_staff_invitation: {
+        Args: {
+          target_invitation_id: string;
+        };
+        Returns: string | null;
+      };
     };
     Enums: {
       [_ in never]: never;

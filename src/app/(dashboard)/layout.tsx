@@ -20,6 +20,8 @@ import {
   X,
   ChevronDown,
   Shield,
+  Loader2,
+  AlertCircle,
 } from "lucide-react";
 
 interface NavItem {
@@ -51,31 +53,63 @@ export default function DashboardLayout({
 
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [businessName, setBusinessName] = useState("BinRo PG Group");
-  const [userRole, setUserRole] = useState<string>("Owner");
+  const [userRole, setUserRole] = useState<string>("");
   const [userPhone, setUserPhone] = useState<string>("");
+  const [sessionStatus, setSessionStatus] = useState<"loading" | "authorized" | "unauthorized">("loading");
 
   useEffect(() => {
     async function loadSession() {
       try {
         const { data } = await supabase.auth.getUser();
-        if (data?.user) {
-          setUserPhone(data.user.phone || data.user.user_metadata?.phone || "");
+        const user = data?.user;
+
+        const isExplicitDemo =
+          process.env.NODE_ENV !== "production" &&
+          (typeof window !== "undefined"
+            ? Boolean(
+                sessionStorage.getItem("binro_user_session") ||
+                sessionStorage.getItem("binro_active_business")
+              )
+            : false);
+
+        if (!user && !isExplicitDemo) {
+          setSessionStatus("unauthorized");
+          router.replace("/login");
+          return;
+        }
+
+        if (user) {
+          setUserPhone(user.phone || user.user_metadata?.phone || "");
+        } else if (isExplicitDemo) {
+          setUserPhone("Demo Account");
         }
 
         const { businessService } = await import("@/services/business.service");
         const biz = await businessService.getActiveBusiness();
         if (biz) {
           setBusinessName(biz.name);
-          if (data?.user && biz.owner_user_id === data.user.id) {
-            setUserRole("Owner");
+          const resolvedRole = await businessService.getUserRole(biz.id);
+          if (resolvedRole) {
+            setUserRole(resolvedRole.charAt(0).toUpperCase() + resolvedRole.slice(1));
+            setSessionStatus("authorized");
+          } else {
+            setUserRole("No Active Role");
+            setSessionStatus("unauthorized");
           }
+        } else if (isExplicitDemo) {
+          setUserRole("Demo Owner");
+          setSessionStatus("authorized");
+        } else {
+          setSessionStatus("unauthorized");
+          router.replace("/signup");
         }
       } catch (err) {
         console.error("Error loading layout session:", err);
+        setSessionStatus("unauthorized");
       }
     }
     loadSession();
-  }, [supabase]);
+  }, [supabase, router]);
 
   const handleSignOut = async () => {
     try {
@@ -83,7 +117,18 @@ export default function DashboardLayout({
     } catch {
       // ignore
     }
-    sessionStorage.clear();
+    if (typeof document !== "undefined") {
+      document.cookie = "binro_demo_session=; path=/; max-age=0";
+    }
+    if (typeof window !== "undefined") {
+      const binroKeys = [
+        "binro_auth_phone",
+        "binro_user_session",
+        "binro_active_business",
+        "binro_active_property_id",
+      ];
+      binroKeys.forEach((key) => sessionStorage.removeItem(key));
+    }
     router.replace("/login");
   };
 
@@ -133,7 +178,7 @@ export default function DashboardLayout({
           <div className="flex items-center justify-between px-2.5 py-1.5 rounded-lg bg-zinc-100 dark:bg-zinc-800/60 text-xs text-zinc-600 dark:text-zinc-300">
             <div className="flex items-center gap-1.5">
               <Shield className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
-              <span>Role: <strong className="text-zinc-900 dark:text-zinc-100">{userRole}</strong></span>
+              <span>Role: <strong className="text-zinc-900 dark:text-zinc-100">{userRole || "Verifying..."}</strong></span>
             </div>
             <ChevronDown className="w-3.5 h-3.5 text-zinc-400" />
           </div>
@@ -173,7 +218,9 @@ export default function DashboardLayout({
               <p className="text-xs font-semibold text-zinc-900 dark:text-zinc-200 truncate">
                 {userPhone || "+91 Mobile User"}
               </p>
-              <p className="text-[11px] text-zinc-400 truncate">{userRole} Access</p>
+              <p className="text-[11px] text-zinc-400 truncate">
+                {userRole ? `${userRole} Access` : "Verifying..."}
+              </p>
             </div>
             <button
               onClick={handleSignOut}
@@ -189,7 +236,45 @@ export default function DashboardLayout({
       {/* Main Content Area */}
       <main className="flex-1 flex flex-col min-w-0 overflow-y-auto">
         <div className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto">
-          {children}
+          {sessionStatus === "loading" ? (
+            <div className="min-h-[50vh] flex flex-col items-center justify-center gap-3 text-center">
+              <Loader2 className="w-8 h-8 text-blue-600 animate-spin" />
+              <p className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                Verifying Business Access...
+              </p>
+              <p className="text-xs text-zinc-500">Connecting to secure workspace</p>
+            </div>
+          ) : sessionStatus === "unauthorized" ? (
+            <div className="min-h-[50vh] flex flex-col items-center justify-center text-center max-w-md mx-auto space-y-4">
+              <div className="w-12 h-12 rounded-2xl bg-amber-50 dark:bg-amber-950/40 text-amber-600 dark:text-amber-400 border border-amber-200 dark:border-amber-800 flex items-center justify-center">
+                <AlertCircle className="w-6 h-6" />
+              </div>
+              <div>
+                <h2 className="text-lg font-bold text-zinc-900 dark:text-zinc-100">
+                  Access Restricted
+                </h2>
+                <p className="text-xs text-zinc-500 mt-1">
+                  You do not have an active membership for this business organization.
+                </p>
+              </div>
+              <div className="flex items-center gap-3 pt-2">
+                <Link
+                  href="/signup"
+                  className="px-4 py-2 rounded-xl text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 transition-colors shadow-xs"
+                >
+                  Create or Switch Business
+                </Link>
+                <button
+                  onClick={handleSignOut}
+                  className="px-4 py-2 rounded-xl text-xs font-semibold text-zinc-700 dark:text-zinc-300 bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-colors cursor-pointer"
+                >
+                  Sign Out
+                </button>
+              </div>
+            </div>
+          ) : (
+            children
+          )}
         </div>
       </main>
     </div>

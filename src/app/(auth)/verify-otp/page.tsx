@@ -109,12 +109,23 @@ function VerifyOtpContent() {
     setErrorMsg(null);
 
     try {
+      const rawReturnUrl = searchParams.get("returnUrl");
+      const safeReturnUrl =
+        rawReturnUrl && rawReturnUrl.startsWith("/") && !rawReturnUrl.startsWith("//")
+          ? rawReturnUrl
+          : "/dashboard";
+
       if (isDemo || !process.env.NEXT_PUBLIC_SUPABASE_URL) {
         // Fallback for preview before live Supabase project is attached
+        if (typeof document !== "undefined") {
+          document.cookie = "binro_demo_session=1; path=/; SameSite=Lax";
+        }
         sessionStorage.setItem("binro_user_session", JSON.stringify({ phone, role: "owner" }));
         const hasBusiness = sessionStorage.getItem("binro_active_business");
-        if (hasBusiness) {
-          router.push("/dashboard");
+        if (safeReturnUrl.startsWith("/invite/")) {
+          router.push(safeReturnUrl);
+        } else if (hasBusiness) {
+          router.push(safeReturnUrl);
         } else {
           router.push("/signup");
         }
@@ -134,7 +145,13 @@ function VerifyOtpContent() {
       }
 
       if (data?.user) {
-        // Step 6 from instructions: check business membership and role
+        // If the user arrived with an invitation URL, route directly to the invitation acceptance page
+        if (safeReturnUrl.startsWith("/invite/")) {
+          router.push(safeReturnUrl);
+          return;
+        }
+
+        // Check business membership and role
         const { data: memberData } = await supabase
           .from("business_members")
           .select("id, business_id, role, status")
@@ -143,8 +160,8 @@ function VerifyOtpContent() {
           .limit(1);
 
         if (memberData && memberData.length > 0) {
-          // Existing owner or assigned staff -> Dashboard
-          router.push("/dashboard");
+          // Existing owner or assigned staff -> Destination
+          router.push(safeReturnUrl);
         } else {
           // New owner onboarding -> Business creation
           router.push("/signup");

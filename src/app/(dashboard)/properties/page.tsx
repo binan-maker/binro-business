@@ -32,13 +32,13 @@ export default function PropertiesPage() {
   const [businessId, setBusinessId] = useState<string | null>(null);
   const [businessName, setBusinessName] = useState<string>("Your Business");
   const [permissions, setPermissions] = useState<PropertyPermissions>({
-    canCreate: true,
-    canEdit: true,
-    canDelete: true,
-    canChangeStatus: true,
+    canCreate: false,
+    canEdit: false,
+    canDelete: false,
+    canChangeStatus: false,
     isWarden: false,
-    isAdminOrOwner: true,
-    accessiblePropertyIds: null,
+    isAdminOrOwner: false,
+    accessiblePropertyIds: [],
   });
 
   // Data
@@ -101,9 +101,7 @@ export default function PropertiesPage() {
 
       // Check role & permissions
       const context = await propertyService.getUserPropertyContext(biz.id);
-      if (context.role) {
-        setPermissions(context.permissions);
-      }
+      setPermissions(context.permissions);
 
       // Fetch enriched properties list
       const data = await propertyService.getProperties(biz.id, filters);

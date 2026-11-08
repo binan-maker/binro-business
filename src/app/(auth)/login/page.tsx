@@ -1,12 +1,15 @@
 "use client";
 
-import React, { useState } from "react";
-import { useRouter } from "next/navigation";
+import React, { useState, Suspense } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { Building2, Phone, ArrowRight, ShieldCheck, AlertCircle, Loader2 } from "lucide-react";
 
-export default function LoginPage() {
+import { normalizeIndianPhone } from "@/lib/validations/tenant.validation";
+
+function LoginForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const supabase = createClient();
 
   const countryCode = "+91";
@@ -14,18 +17,34 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  const cleanNumber = phoneNumber.replace(/\D/g, "");
+  const returnUrl = searchParams.get("returnUrl") || "";
+  const returnQuery = returnUrl ? `&returnUrl=${encodeURIComponent(returnUrl)}` : "";
+
+  const handlePhoneChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    let raw = e.target.value.replace(/[^\d+]/g, "");
+    if (raw.startsWith("+91")) {
+      raw = raw.slice(3);
+    } else if (raw.startsWith("91") && raw.length > 10) {
+      raw = raw.slice(2);
+    } else if (raw.startsWith("0")) {
+      raw = raw.slice(1);
+    }
+    const digits = raw.replace(/\D/g, "").slice(0, 10);
+    setPhoneNumber(digits);
+    if (errorMsg) setErrorMsg(null);
+  };
 
   const handleSendOtp = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
 
-    if (cleanNumber.length < 10) {
-      setErrorMsg("Please enter a valid 10-digit mobile number.");
+    const norm = normalizeIndianPhone(phoneNumber);
+    if (!norm.valid) {
+      setErrorMsg(norm.error || "Please enter a valid 10-digit mobile number starting with 6, 7, 8, or 9.");
       return;
     }
 
-    const fullPhone = `${countryCode}${cleanNumber}`;
+    const fullPhone = norm.phone; // Exactly "+91[6-9][0-9]{9}"
     setLoading(true);
 
     try {
@@ -37,7 +56,7 @@ export default function LoginPage() {
         // If Supabase credentials are placeholder or demo mode is active
         if (error.message.includes("placeholder") || error.message.includes("fetch failed")) {
           sessionStorage.setItem("binro_auth_phone", fullPhone);
-          router.push(`/verify-otp?phone=${encodeURIComponent(fullPhone)}&demo=true`);
+          router.push(`/verify-otp?phone=${encodeURIComponent(fullPhone)}&demo=true${returnQuery}`);
           return;
         }
         setErrorMsg(error.message);
@@ -46,7 +65,7 @@ export default function LoginPage() {
       }
 
       sessionStorage.setItem("binro_auth_phone", fullPhone);
-      router.push(`/verify-otp?phone=${encodeURIComponent(fullPhone)}`);
+      router.push(`/verify-otp?phone=${encodeURIComponent(fullPhone)}${returnQuery}`);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Failed to send OTP. Please try again.";
       setErrorMsg(message);
@@ -107,23 +126,23 @@ export default function LoginPage() {
                     autoComplete="tel-national"
                     placeholder="98765 43210"
                     value={phoneNumber}
-                    onChange={(e) => setPhoneNumber(e.target.value)}
+                    onChange={handlePhoneChange}
                     disabled={loading}
                     className="w-full py-2.5 px-3 text-sm text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 focus:outline-none bg-transparent"
-                    maxLength={14}
+                    maxLength={10}
                     required
                   />
                   <Phone className="w-4 h-4 text-zinc-400 mr-3 pointer-events-none" />
                 </div>
               </div>
               <p className="text-[11px] text-zinc-400 dark:text-zinc-500 mt-1.5">
-                Standard E.164 verified SMS. No password needed.
+                Enter 10-digit number. Country code (+91) is applied automatically.
               </p>
             </div>
 
             <button
               type="submit"
-              disabled={loading || cleanNumber.length < 10}
+              disabled={loading || phoneNumber.length < 10}
               className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 active:bg-blue-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm cursor-pointer"
             >
               {loading ? (
@@ -156,5 +175,22 @@ export default function LoginPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen flex items-center justify-center bg-zinc-50 dark:bg-zinc-950">
+          <div className="flex items-center gap-2 text-xs text-zinc-400">
+            <Loader2 className="w-4 h-4 animate-spin text-blue-600" />
+            <span>Loading...</span>
+          </div>
+        </div>
+      }
+    >
+      <LoginForm />
+    </Suspense>
   );
 }

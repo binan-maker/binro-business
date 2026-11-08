@@ -48,17 +48,17 @@ function RoomsContent() {
   const [selectedPropertyId, setSelectedPropertyId] = useState<string>("");
 
   const [permissions, setPermissions] = useState<InventoryPermissions>({
-    canCreateFloor: true,
-    canEditFloor: true,
-    canDeleteFloor: true,
-    canCreateRoom: true,
-    canEditRoom: true,
-    canDeleteRoom: true,
-    canCreateBed: true,
-    canEditBed: true,
-    canDeleteBed: true,
+    canCreateFloor: false,
+    canEditFloor: false,
+    canDeleteFloor: false,
+    canCreateRoom: false,
+    canEditRoom: false,
+    canDeleteRoom: false,
+    canCreateBed: false,
+    canEditBed: false,
+    canDeleteBed: false,
     isWarden: false,
-    isAdminOrOwner: true,
+    isAdminOrOwner: false,
   });
 
   // Floors & Rooms Data

@@ -35,12 +35,28 @@ export const propertyService = {
     const user = authData?.user;
 
     if (!user) {
-      // Demo / preview mode fallback: grant owner permissions for UI testing
-      const permissions = getPropertyPermissions("owner", null);
-      return { role: "owner", permissions, userId: null };
+      // Mock owner permissions are strictly restricted to explicitly enabled development/demo mode.
+      // In production or unauthenticated scenarios, the service fails closed with no operational permissions.
+      const isExplicitDemo =
+        process.env.NODE_ENV !== "production" &&
+        (typeof window !== "undefined"
+          ? Boolean(
+              sessionStorage.getItem("binro_user_session") ||
+              sessionStorage.getItem("binro_active_business")
+            )
+          : false);
+
+      if (isExplicitDemo) {
+        const permissions = getPropertyPermissions("owner", null);
+        return { role: "owner", permissions, userId: null };
+      }
+
+      // Production or unauthorized/unauthenticated access: fail closed
+      const permissions = getPropertyPermissions(null, []);
+      return { role: null, permissions, userId: null };
     }
 
-    // 1. Fetch active membership
+    // 1. Fetch active membership - an active business_members record is strictly required
     const { data: members, error: memError } = await supabase
       .from("business_members")
       .select("id, role, status")
@@ -49,25 +65,14 @@ export const propertyService = {
       .eq("status", "active")
       .limit(1);
 
-    let role: UserRole | null = null;
-    let memberId: string | null = null;
-
-    if (!memError && members && members.length > 0) {
-      role = members[0].role as UserRole;
-      memberId = members[0].id;
-    } else {
-      // Check if user is the direct owner in businesses table
-      const { data: biz } = await supabase
-        .from("businesses")
-        .select("id, owner_user_id")
-        .eq("id", businessId)
-        .eq("owner_user_id", user.id)
-        .maybeSingle();
-
-      if (biz) {
-        role = "owner";
-      }
+    if (memError || !members || members.length === 0) {
+      // If no active membership exists, fail closed with null role and zero permissions
+      const permissions = getPropertyPermissions(null, []);
+      return { role: null, permissions, userId: user.id };
     }
+
+    const role = members[0].role as UserRole;
+    const memberId = members[0].id;
 
     // 2. If warden, fetch specifically assigned property IDs from property_staff
     let assignedPropertyIds: string[] | null = null;
