@@ -1,0 +1,8 @@
+{
+  "name": "BinRo Business",
+  "description": "Hostel & PG Management SaaS Platform for single & multi-property owners.",
+  "permissions": [],
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

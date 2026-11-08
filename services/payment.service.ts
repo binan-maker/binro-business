@@ -1,12 +1,13 @@
 import { createClient } from "@/lib/supabase/client";
 import type { Payment, RecordPaymentPayload, UserRole } from "@/types/app.types";
 import { getPaymentPermissions, type PaymentPermissions } from "@/lib/permissions/payment.permissions";
-import { isValidId } from "@/lib/validations/payment.validation";
+import { isValidId, validatePaymentAllocationInput } from "@/lib/validations/payment.validation";
 
 export interface PaymentWithTenant extends Payment {
   tenant_name?: string;
   property_name?: string;
   allocations_summary?: string;
+  allocated_paise?: number;
 }
 
 export interface PaymentAllocationDetail {
@@ -172,6 +173,7 @@ export const paymentService = {
         tenant_name: tenantMap[p.tenant_id] || "Tenant",
         property_name: propertyMap[p.property_id] || "Property",
         allocations_summary: summary,
+        allocated_paise: allocated,
       };
     });
   },
@@ -374,6 +376,246 @@ export const paymentService = {
     if (error) {
       throw new Error(error.message || "Failed to remove payment allocation.");
     }
+  },
+
+  /**
+   * Allocates an existing received payment's remaining balance to an outstanding rent charge.
+   * Enforces trusted DB permission checks, relationship integrity (same business, property, tenant),
+   * live allocation balances, and duplicate prevention.
+   */
+  async allocatePayment(payload: {
+    paymentId: string;
+    rentChargeId: string;
+    allocatedAmount: number; // in paise
+  }): Promise<PaymentAllocationDetail> {
+    const paymentId = (payload.paymentId || "").trim();
+    const rentChargeId = (payload.rentChargeId || "").trim();
+    const numAllocAmount = Number(payload.allocatedAmount);
+
+    if (!isValidId(paymentId)) {
+      throw new Error("Payment identifier is required.");
+    }
+    if (!isValidId(rentChargeId)) {
+      throw new Error("Rent charge identifier is required.");
+    }
+    if (isNaN(numAllocAmount) || !Number.isInteger(numAllocAmount) || numAllocAmount <= 0) {
+      throw new Error("Allocated amount must be a positive integer in paise.");
+    }
+
+    const supabase = createClient();
+
+    // 1. Fetch target payment
+    const { data: payment, error: pError } = await supabase
+      .from("payments")
+      .select("id, business_id, property_id, tenant_id, amount, status")
+      .eq("id", paymentId)
+      .maybeSingle();
+
+    if (pError || !payment) {
+      throw new Error(pError?.message || "Payment record not found.");
+    }
+
+    // 2. Load authenticated user permissions from trusted database context
+    const userContext = await this.getUserPaymentPermissions(payment.business_id);
+    if (!userContext.role) {
+      throw new Error("You are not an active member of this business.");
+    }
+
+    const canAllocate =
+      userContext.permissions.canAllocatePayment &&
+      (userContext.permissions.isAdminOrOwner ||
+        (userContext.permissions.accessiblePropertyIds !== null &&
+          userContext.permissions.accessiblePropertyIds.includes(payment.property_id)));
+
+    if (!canAllocate) {
+      throw new Error("You do not have permission to allocate payments for this property.");
+    }
+
+    // 3. Fetch target rent charge
+    const { data: rentCharge, error: rError } = await supabase
+      .from("rent_charges")
+      .select("id, business_id, property_id, tenant_id, amount, amount_paid, status, period_start, period_end, description")
+      .eq("id", rentChargeId)
+      .maybeSingle();
+
+    if (rError || !rentCharge) {
+      throw new Error(rError?.message || "Rent charge record not found.");
+    }
+
+    // 4. Check for existing allocation to prevent duplicate entry
+    const { data: existingAlloc } = await supabase
+      .from("payment_allocations")
+      .select("id")
+      .eq("payment_id", payment.id)
+      .eq("rent_charge_id", rentCharge.id)
+      .maybeSingle();
+
+    // 5. Query live allocations to calculate real remaining balances
+    const [paymentAllocsRes, rentAllocsRes] = await Promise.all([
+      supabase
+        .from("payment_allocations")
+        .select("allocated_amount")
+        .eq("payment_id", payment.id),
+      supabase
+        .from("payment_allocations")
+        .select("allocated_amount")
+        .eq("rent_charge_id", rentCharge.id),
+    ]);
+
+    const currentPaymentAllocated = (paymentAllocsRes.data || []).reduce(
+      (sum, a) => sum + Number(a.allocated_amount),
+      0
+    );
+    const availablePaymentPaise = Math.max(0, payment.amount - currentPaymentAllocated);
+
+    const currentRentAllocated = (rentAllocsRes.data || []).reduce(
+      (sum, a) => sum + Number(a.allocated_amount),
+      0
+    );
+    const outstandingRentPaise = Math.max(0, rentCharge.amount - currentRentAllocated);
+
+    // 6. Comprehensive validation
+    const validation = validatePaymentAllocationInput({
+      payment_id: payment.id,
+      rent_charge_id: rentCharge.id,
+      allocated_amount: numAllocAmount,
+      available_payment_paise: availablePaymentPaise,
+      outstanding_rent_paise: outstandingRentPaise,
+      payment_status: payment.status,
+      rent_charge_status: rentCharge.status,
+      payment_business_id: payment.business_id,
+      rent_charge_business_id: rentCharge.business_id,
+      payment_property_id: payment.property_id,
+      rent_charge_property_id: rentCharge.property_id,
+      payment_tenant_id: payment.tenant_id,
+      rent_charge_tenant_id: rentCharge.tenant_id,
+      is_duplicate: Boolean(existingAlloc),
+    });
+
+    if (!validation.valid) {
+      const errMsg = Object.values(validation.errors).filter(Boolean).join(" ");
+      throw new Error(errMsg || "Invalid payment allocation request.");
+    }
+
+    // 7. Insert payment allocation.
+    // Database triggers (validate_payment_allocation_before_change) lock parent rows and re-validate;
+    // sync_rent_charge_after_allocation automatically updates rent charge amount_paid and status.
+    const { data: insertedAlloc, error: insertError } = await supabase
+      .from("payment_allocations")
+      .insert({
+        payment_id: payment.id,
+        rent_charge_id: rentCharge.id,
+        business_id: payment.business_id,
+        property_id: payment.property_id,
+        tenant_id: payment.tenant_id,
+        allocated_amount: validation.sanitized.allocated_amount,
+      })
+      .select()
+      .single();
+
+    if (insertError) {
+      throw new Error(insertError.message || "Failed to create payment allocation.");
+    }
+
+    return {
+      id: insertedAlloc.id,
+      payment_id: insertedAlloc.payment_id,
+      rent_charge_id: insertedAlloc.rent_charge_id,
+      business_id: insertedAlloc.business_id,
+      property_id: insertedAlloc.property_id,
+      tenant_id: insertedAlloc.tenant_id,
+      allocated_amount: Number(insertedAlloc.allocated_amount),
+      created_at: insertedAlloc.created_at,
+      rent_charge: {
+        id: rentCharge.id,
+        period_start: rentCharge.period_start,
+        period_end: rentCharge.period_end,
+        amount: rentCharge.amount,
+        amount_paid: rentCharge.amount_paid + validation.sanitized.allocated_amount,
+        status:
+          rentCharge.amount_paid + validation.sanitized.allocated_amount >= rentCharge.amount
+            ? "paid"
+            : "partially_paid",
+        description: rentCharge.description,
+      },
+    };
+  },
+
+  /**
+   * Reverses an existing received payment receipt.
+   * Enforces trusted DB permission checks (active owner/admin only),
+   * strictly verifies payment status is 'received', verifies the payment belongs to the business,
+   * asserts zero active allocations exist, and updates status to 'reversed'.
+   * Database triggers and RLS policies serve as the final integrity layer.
+   */
+  async reversePayment(paymentId: string): Promise<Payment> {
+    if (!isValidId(paymentId)) {
+      throw new Error("Invalid payment identifier.");
+    }
+
+    const supabase = createClient();
+
+    // 1. Fetch target payment
+    const { data: payment, error: pError } = await supabase
+      .from("payments")
+      .select("id, business_id, property_id, tenant_id, amount, status")
+      .eq("id", paymentId)
+      .maybeSingle();
+
+    if (pError || !payment) {
+      throw new Error(pError?.message || "Payment record not found.");
+    }
+
+    // 2. Load authenticated user permissions from trusted database context
+    const userContext = await this.getUserPaymentPermissions(payment.business_id);
+    if (!userContext.role) {
+      throw new Error("You are not an active member of this business.");
+    }
+
+    // 3. Admin-only authorization check (Wardens can NEVER reverse payments)
+    if (!userContext.permissions.canReversePayment) {
+      throw new Error("Only business owners and administrators are authorized to reverse payments.");
+    }
+
+    // 4. Status validation
+    if (payment.status === "reversed") {
+      throw new Error("This payment has already been reversed.");
+    }
+
+    if (payment.status !== "received") {
+      throw new Error(`Cannot reverse a payment with status '${payment.status}'. Only received payments can be reversed.`);
+    }
+
+    // 5. Allocation check: Cannot reverse if any allocations exist
+    const { data: allocations, error: aError } = await supabase
+      .from("payment_allocations")
+      .select("id, allocated_amount")
+      .eq("payment_id", payment.id);
+
+    if (aError) {
+      throw new Error(aError.message || "Failed to verify payment allocations.");
+    }
+
+    if (allocations && allocations.length > 0) {
+      throw new Error("Cannot reverse a payment that has existing allocations. Please remove all allocations first.");
+    }
+
+    // 6. Perform status update to 'reversed'
+    // Enforced by Postgres RLS ("Admins can update payments") and trigger validate_payment_before_update
+    const { data: updatedPayment, error: uError } = await supabase
+      .from("payments")
+      .update({
+        status: "reversed",
+      })
+      .eq("id", payment.id)
+      .select()
+      .single();
+
+    if (uError) {
+      throw new Error(uError.message || "Failed to reverse payment.");
+    }
+
+    return updatedPayment as Payment;
   },
 };
 

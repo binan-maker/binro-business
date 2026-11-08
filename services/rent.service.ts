@@ -253,6 +253,7 @@ export const rentService = {
       rent_charge_id: rentChargeId,
       description: updates.description,
       notes: updates.notes,
+      amount: updates.amount,
     });
     if (!valid.valid) {
       const errMsgs = Object.values(valid.errors).filter(Boolean).join(", ");
@@ -260,6 +261,43 @@ export const rentService = {
     }
 
     const supabase = createClient();
+
+    // 1. Fetch current rent charge to check existing amount & allocations
+    const { data: current, error: fetchErr } = await supabase
+      .from("rent_charges")
+      .select("id, amount, amount_paid, business_id")
+      .eq("id", rentChargeId)
+      .maybeSingle();
+
+    if (fetchErr) {
+      throw new Error(fetchErr.message || "Failed to fetch rent charge.");
+    }
+
+    // 2. Strict enforcement: Cannot modify rent charge amount if payments have already been allocated
+    if (current && updates.amount !== undefined && updates.amount !== current.amount) {
+      if (current.amount_paid > 0) {
+        throw new Error(
+          `Cannot modify rent charge amount (${current.amount} paise) because ${current.amount_paid} paise has already been allocated.`
+        );
+      }
+
+      // Check payment_allocations table directly to guarantee zero allocations
+      const { data: allocations } = await supabase
+        .from("payment_allocations")
+        .select("allocated_amount")
+        .eq("rent_charge_id", rentChargeId);
+
+      const totalAllocated = (allocations || []).reduce(
+        (sum, a) => sum + (Number(a.allocated_amount) || 0),
+        0
+      );
+
+      if (totalAllocated > 0) {
+        throw new Error(
+          `Cannot modify rent charge amount (${current.amount} paise) because ${totalAllocated} paise has already been allocated.`
+        );
+      }
+    }
 
     const payload: {
       description?: string | null;
@@ -271,7 +309,7 @@ export const rentService = {
     if (updates.description !== undefined) payload.description = valid.sanitized.description;
     if (updates.notes !== undefined) payload.notes = valid.sanitized.notes;
     // Pass raw attempt of sensitive fields to test database triggers / RLS enforcement
-    if (updates.amount !== undefined) payload.amount = updates.amount;
+    if (updates.amount !== undefined) payload.amount = valid.sanitized.amount ?? updates.amount;
     if (updates.amount_paid !== undefined) payload.amount_paid = updates.amount_paid;
     if (updates.status !== undefined) payload.status = updates.status as RentChargeStatus;
 
@@ -281,7 +319,6 @@ export const rentService = {
       .eq("id", rentChargeId)
       .select()
       .single();
-
 
     if (error) {
       throw new Error(error.message || "Failed to update rent charge.");
@@ -301,6 +338,77 @@ export const rentService = {
 
     if (!data) return 0;
     return data.reduce((acc, c) => acc + (c.amount - c.amount_paid), 0);
+  },
+
+  /**
+   * Deletes an erroneous rent charge when it has zero payment allocations and zero payments recorded.
+   * Enforces trusted DB permission checks (active owner/admin only),
+   * verifies the charge belongs to the business, asserts no payment allocations exist,
+   * asserts amount_paid == 0, and asserts status is unpaid.
+   * Enforced at the database layer by RLS policy ("Admins can delete rent charges").
+   */
+  async deleteRentCharge(rentChargeId: string): Promise<void> {
+    if (!isValidId(rentChargeId)) {
+      throw new Error("Invalid rent charge identifier.");
+    }
+
+    const supabase = createClient();
+
+    // 1. Fetch target rent charge
+    const { data: rentCharge, error: rError } = await supabase
+      .from("rent_charges")
+      .select("id, business_id, property_id, tenant_id, amount, amount_paid, status")
+      .eq("id", rentChargeId)
+      .maybeSingle();
+
+    if (rError || !rentCharge) {
+      throw new Error(rError?.message || "Rent charge not found.");
+    }
+
+    // 2. Load authenticated user permissions from trusted database context
+    const userContext = await this.getUserRentPermissions(rentCharge.business_id);
+    if (!userContext.role) {
+      throw new Error("You are not an active member of this business.");
+    }
+
+    // 3. Admin-only authorization check (Wardens can NEVER delete rent charges)
+    if (!userContext.permissions.canDeleteBill) {
+      throw new Error("Only business owners and administrators are authorized to delete rent charges.");
+    }
+
+    // 4. Verify no payment allocations exist
+    const { data: allocations, error: aError } = await supabase
+      .from("payment_allocations")
+      .select("id, allocated_amount")
+      .eq("rent_charge_id", rentCharge.id);
+
+    if (aError) {
+      throw new Error(aError.message || "Failed to verify rent charge payment allocations.");
+    }
+
+    if (allocations && allocations.length > 0) {
+      throw new Error("Cannot delete a rent charge that has existing payment allocations. Please remove allocations first.");
+    }
+
+    // 5. Verify amount_paid is zero
+    if (rentCharge.amount_paid > 0) {
+      throw new Error(`Cannot delete a rent charge with recorded payments (₹${Math.round(rentCharge.amount_paid / 100).toLocaleString("en-IN")}).`);
+    }
+
+    // 6. Verify status consistency
+    if (rentCharge.status === "paid" || rentCharge.status === "partially_paid") {
+      throw new Error(`Cannot delete a rent charge with status '${rentCharge.status}'.`);
+    }
+
+    // 7. Delete record (enforced by RLS: "Admins can delete rent charges")
+    const { error: delError } = await supabase
+      .from("rent_charges")
+      .delete()
+      .eq("id", rentCharge.id);
+
+    if (delError) {
+      throw new Error(delError.message || "Failed to delete rent charge.");
+    }
   },
 };
 

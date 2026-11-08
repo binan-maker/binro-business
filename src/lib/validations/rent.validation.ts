@@ -166,13 +166,19 @@ export function validateWaiveRentChargeInput(input: {
 }
 
 /**
- * Validates input for operational rent charge updates (e.g. description and notes).
+ * Validates input for operational rent charge updates (e.g. description, notes, and amount).
  */
 export function validateUpdateRentChargeInput(input: {
   rent_charge_id: string;
   description?: string | null;
   notes?: string | null;
-}): RentValidationResult<{ rent_charge_id: string; description: string | null; notes: string | null }> {
+  amount?: number | null;
+}): RentValidationResult<{
+  rent_charge_id: string;
+  description: string | null;
+  notes: string | null;
+  amount?: number;
+}> {
   const errors: RentValidationErrors = {};
   const chargeId = (input.rent_charge_id || "").trim();
   const description = input.description !== undefined && input.description !== null ? input.description.trim() : null;
@@ -188,6 +194,16 @@ export function validateUpdateRentChargeInput(input: {
     errors.notes = "Notes cannot exceed 1000 characters.";
   }
 
+  let sanitizedAmount: number | undefined = undefined;
+  if (input.amount !== undefined && input.amount !== null) {
+    const numAmount = Number(input.amount);
+    if (isNaN(numAmount) || !Number.isInteger(numAmount) || numAmount <= 0) {
+      errors.amount = "Amount must be a positive integer in paise (e.g., 850000 for ₹8,500).";
+    } else {
+      sanitizedAmount = numAmount;
+    }
+  }
+
   return {
     valid: Object.keys(errors).length === 0,
     errors,
@@ -195,6 +211,7 @@ export function validateUpdateRentChargeInput(input: {
       rent_charge_id: chargeId,
       description,
       notes,
+      amount: sanitizedAmount,
     },
   };
 }

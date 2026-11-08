@@ -171,7 +171,7 @@ export function validateRecordPaymentInput(
 }
 
 /**
- * Validates standalone payment allocation input.
+ * Validates standalone payment allocation input and financial integrity constraints.
  */
 export function validatePaymentAllocationInput(input: {
   payment_id: string;
@@ -179,6 +179,15 @@ export function validatePaymentAllocationInput(input: {
   allocated_amount: number;
   available_payment_paise?: number;
   outstanding_rent_paise?: number;
+  payment_status?: string;
+  rent_charge_status?: string;
+  payment_business_id?: string;
+  rent_charge_business_id?: string;
+  payment_property_id?: string;
+  rent_charge_property_id?: string;
+  payment_tenant_id?: string;
+  rent_charge_tenant_id?: string;
+  is_duplicate?: boolean;
 }): PaymentValidationResult<{
   payment_id: string;
   rent_charge_id: string;
@@ -196,8 +205,10 @@ export function validatePaymentAllocationInput(input: {
     errors.rent_charge_id = "Rent charge identifier is required.";
   }
 
+  // 1. Positive Integer Amount in Paise
   if (
     input.allocated_amount === undefined ||
+    input.allocated_amount === null ||
     isNaN(numAllocAmount) ||
     !Number.isInteger(numAllocAmount) ||
     numAllocAmount <= 0
@@ -216,6 +227,46 @@ export function validatePaymentAllocationInput(input: {
     ) {
       errors.allocated_amount = `Allocation (₹${(numAllocAmount / 100).toLocaleString("en-IN")}) exceeds outstanding rent bill due (₹${(input.outstanding_rent_paise / 100).toLocaleString("en-IN")}).`;
     }
+  }
+
+  // 2. Payment Status Check
+  if (input.payment_status && input.payment_status !== "received") {
+    errors.payment_status = `Cannot allocate a payment with status '${input.payment_status}'. Only received payments can be allocated.`;
+  }
+
+  // 3. Rent Charge Status Check
+  if (input.rent_charge_status === "waived") {
+    errors.rent_charge_status = "Cannot allocate payments to a waived rent charge.";
+  } else if (input.rent_charge_status === "paid") {
+    errors.rent_charge_status = "Rent charge is already fully paid.";
+  }
+
+  // 4. Duplicate Check
+  if (input.is_duplicate) {
+    errors.duplicate = "An allocation already exists linking this payment to this rent charge.";
+  }
+
+  // 5. Relationship Matching (Same Business, Property, Tenant)
+  if (
+    input.payment_business_id &&
+    input.rent_charge_business_id &&
+    input.payment_business_id !== input.rent_charge_business_id
+  ) {
+    errors.business_match = "Payment and rent charge do not belong to the same business.";
+  }
+  if (
+    input.payment_property_id &&
+    input.rent_charge_property_id &&
+    input.payment_property_id !== input.rent_charge_property_id
+  ) {
+    errors.property_match = "Payment and rent charge belong to different properties.";
+  }
+  if (
+    input.payment_tenant_id &&
+    input.rent_charge_tenant_id &&
+    input.payment_tenant_id !== input.rent_charge_tenant_id
+  ) {
+    errors.tenant_match = "Payment and rent charge belong to different tenants.";
   }
 
   return {
