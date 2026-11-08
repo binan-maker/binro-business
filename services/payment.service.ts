@@ -115,13 +115,57 @@ export const paymentService = {
     };
   },
 
-  async getPayments(businessId: string): Promise<PaymentWithTenant[]> {
+  async getPayments(
+    businessId: string,
+    options?: {
+      propertyId?: string | null;
+      startDate?: string | null;
+      endDate?: string | null;
+      status?: "received" | "reversed" | "all";
+    }
+  ): Promise<PaymentWithTenant[]> {
     const supabase = createClient();
-    const { data: payments, error } = await supabase
+    const userContext = await this.getUserPaymentPermissions(businessId);
+
+    let query = supabase
       .from("payments")
       .select("*")
-      .eq("business_id", businessId)
-      .order("paid_at", { ascending: false });
+      .eq("business_id", businessId);
+
+    // Apply role scoping
+    if (userContext.permissions.accessiblePropertyIds !== null) {
+      if (userContext.permissions.accessiblePropertyIds.length === 0) {
+        return [];
+      }
+      if (options?.propertyId && options.propertyId !== "all") {
+        if (!userContext.permissions.accessiblePropertyIds.includes(options.propertyId)) {
+          return [];
+        }
+        query = query.eq("property_id", options.propertyId);
+      } else {
+        query = query.in("property_id", userContext.permissions.accessiblePropertyIds);
+      }
+    } else {
+      if (options?.propertyId && options.propertyId !== "all") {
+        query = query.eq("property_id", options.propertyId);
+      }
+    }
+
+    if (options?.status && options.status !== "all") {
+      query = query.eq("status", options.status);
+    }
+
+    if (options?.startDate) {
+      query = query.gte("paid_at", options.startDate);
+    }
+
+    if (options?.endDate) {
+      query = query.lte("paid_at", options.endDate);
+    }
+
+    query = query.order("paid_at", { ascending: false });
+
+    const { data: payments, error } = await query;
 
     if (error || !payments || payments.length === 0) return [];
 
@@ -244,13 +288,62 @@ export const paymentService = {
     return data.reduce((acc, p) => acc + p.amount, 0);
   },
 
-  async getPaymentStats(businessId: string): Promise<PaymentStats> {
+  async getPaymentStats(
+    businessId: string,
+    options?: {
+      propertyId?: string | null;
+      startDate?: string | null;
+      endDate?: string | null;
+    }
+  ): Promise<PaymentStats> {
     const supabase = createClient();
-    const { data: payments } = await supabase
+    const userContext = await this.getUserPaymentPermissions(businessId);
+
+    let query = supabase
       .from("payments")
-      .select("amount, payment_method, paid_at")
+      .select("amount, payment_method, paid_at, property_id")
       .eq("business_id", businessId)
       .eq("status", "received");
+
+    if (userContext.permissions.accessiblePropertyIds !== null) {
+      if (userContext.permissions.accessiblePropertyIds.length === 0) {
+        return {
+          totalCollected: 0,
+          thisMonthCollected: 0,
+          totalTransactions: 0,
+          methodCounts: { upi: 0, cash: 0, bank_transfer: 0, other: 0 },
+          methodAmounts: { upi: 0, cash: 0, bank_transfer: 0, other: 0 },
+        };
+      }
+      if (options?.propertyId && options.propertyId !== "all") {
+        if (!userContext.permissions.accessiblePropertyIds.includes(options.propertyId)) {
+          return {
+            totalCollected: 0,
+            thisMonthCollected: 0,
+            totalTransactions: 0,
+            methodCounts: { upi: 0, cash: 0, bank_transfer: 0, other: 0 },
+            methodAmounts: { upi: 0, cash: 0, bank_transfer: 0, other: 0 },
+          };
+        }
+        query = query.eq("property_id", options.propertyId);
+      } else {
+        query = query.in("property_id", userContext.permissions.accessiblePropertyIds);
+      }
+    } else {
+      if (options?.propertyId && options.propertyId !== "all") {
+        query = query.eq("property_id", options.propertyId);
+      }
+    }
+
+    if (options?.startDate) {
+      query = query.gte("paid_at", options.startDate);
+    }
+
+    if (options?.endDate) {
+      query = query.lte("paid_at", options.endDate);
+    }
+
+    const { data: payments } = await query;
 
     const stats: PaymentStats = {
       totalCollected: 0,

@@ -108,7 +108,13 @@ export const businessService = {
 
     return members.map((m) => {
       const prof = profileMap[m.user_id];
-      const propId = staffPropMap[m.id] || null;
+      let propId = staffPropMap[m.id] || null;
+      if (typeof window !== "undefined") {
+        const demoProp = sessionStorage.getItem(`binro_demo_member_prop_${m.id}`);
+        if (demoProp !== null) {
+          propId = demoProp === "all" ? null : demoProp;
+        }
+      }
       return {
         id: m.id,
         business_id: m.business_id,
@@ -125,23 +131,37 @@ export const businessService = {
     });
   },
 
+  /**
+   * Atomically reassigns a staff member's property access.
+   * If propertyId is "all" or empty, removes specific assignments giving business-wide access.
+   * Executed via public.assign_staff_property RPC in a single transaction.
+   */
   async assignStaffProperty(businessId: string, memberId: string, propertyId: string) {
     const supabase = createClient();
-    // First remove any existing property assignment for this member
-    await supabase
-      .from("property_staff")
-      .delete()
-      .eq("business_id", businessId)
-      .eq("business_member_id", memberId);
+    const targetPropId = propertyId && propertyId !== "all" ? propertyId : null;
 
-    // If propertyId is provided (not "all"), insert new row
-    if (propertyId && propertyId !== "all") {
-      const { error } = await supabase.from("property_staff").insert({
-        business_id: businessId,
-        business_member_id: memberId,
-        property_id: propertyId,
-      });
-      if (error) throw error;
+    const isExplicitDemo =
+      process.env.NODE_ENV !== "production" &&
+      (typeof window !== "undefined"
+        ? Boolean(sessionStorage.getItem("binro_user_session") || sessionStorage.getItem("binro_active_business"))
+        : false);
+
+    if (isExplicitDemo) {
+      if (typeof window !== "undefined") {
+        sessionStorage.setItem(`binro_demo_member_prop_${memberId}`, targetPropId || "all");
+      }
+      return;
+    }
+
+    const { error } = await supabase.rpc("assign_staff_property", {
+      target_business_id: businessId,
+      target_member_id: memberId,
+      target_property_id: targetPropId,
+    });
+
+    if (error) {
+      const message = error.message || error.details || "Failed to update property assignment.";
+      throw new Error(message);
     }
   },
 
@@ -588,6 +608,50 @@ export const businessService = {
       ...inv,
       property_name: propMap[inv.property_id] || "Assigned Property",
     }));
+  },
+
+  /**
+   * Cancels a pending warden invitation.
+   * Restricts cancellation to authorized owner/admin and enforces pending status via cancel_staff_invitation RPC.
+   */
+  async cancelStaffInvitation(invitationId: string): Promise<boolean> {
+    const supabase = createClient();
+
+    const isExplicitDemo =
+      process.env.NODE_ENV !== "production" &&
+      (typeof window !== "undefined"
+        ? Boolean(
+            sessionStorage.getItem("binro_user_session") ||
+            sessionStorage.getItem("binro_active_business") ||
+            sessionStorage.getItem("binro_demo_invitations")
+          )
+        : false);
+
+    if (isExplicitDemo && typeof window !== "undefined") {
+      const stored: BusinessInvitation[] = JSON.parse(
+        sessionStorage.getItem("binro_demo_invitations") || "[]"
+      );
+      const invIndex = stored.findIndex((i) => i.id === invitationId);
+      if (invIndex >= 0) {
+        if (stored[invIndex].status === "accepted") {
+          throw new Error("Cannot cancel an invitation that has already been accepted.");
+        }
+        stored[invIndex].status = "cancelled";
+        sessionStorage.setItem("binro_demo_invitations", JSON.stringify(stored));
+        return true;
+      }
+    }
+
+    const { error } = await supabase.rpc("cancel_staff_invitation", {
+      target_invitation_id: invitationId,
+    });
+
+    if (error) {
+      const message = error.message || error.details || "Failed to cancel invitation.";
+      throw new Error(message);
+    }
+
+    return true;
   },
 };
 

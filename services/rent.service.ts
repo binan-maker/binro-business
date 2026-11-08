@@ -13,6 +13,25 @@ export interface RentChargeWithTenant extends RentCharge {
   tenant_name?: string;
 }
 
+export interface OverdueRentChargeItem {
+  id: string;
+  tenant_id: string;
+  tenant_name: string;
+  tenant_phone: string;
+  property_id: string;
+  property_name: string;
+  room_number: string;
+  bed_number: string;
+  period_start: string;
+  period_end: string;
+  due_date: string;
+  amount: number; // in paise
+  amount_paid: number; // in paise
+  outstanding_balance: number; // in paise
+  days_overdue: number;
+  status: string;
+}
+
 export const rentService = {
   async getUserRentPermissions(businessId: string): Promise<{
     role: UserRole | null;
@@ -83,14 +102,39 @@ export const rentService = {
     };
   },
 
-  async getRentCharges(businessId: string): Promise<RentChargeWithTenant[]> {
+  async getRentCharges(
+    businessId: string,
+    options?: { propertyId?: string | null }
+  ): Promise<RentChargeWithTenant[]> {
     const supabase = createClient();
+    const userContext = await this.getUserRentPermissions(businessId);
 
-    const { data: charges, error: cErr } = await supabase
+    let query = supabase
       .from("rent_charges")
       .select("*")
-      .eq("business_id", businessId)
-      .order("due_date", { ascending: false });
+      .eq("business_id", businessId);
+
+    if (userContext.permissions.accessiblePropertyIds !== null) {
+      if (userContext.permissions.accessiblePropertyIds.length === 0) {
+        return [];
+      }
+      if (options?.propertyId && options.propertyId !== "all") {
+        if (!userContext.permissions.accessiblePropertyIds.includes(options.propertyId)) {
+          return [];
+        }
+        query = query.eq("property_id", options.propertyId);
+      } else {
+        query = query.in("property_id", userContext.permissions.accessiblePropertyIds);
+      }
+    } else {
+      if (options?.propertyId && options.propertyId !== "all") {
+        query = query.eq("property_id", options.propertyId);
+      }
+    }
+
+    query = query.order("due_date", { ascending: false });
+
+    const { data: charges, error: cErr } = await query;
 
     if (cErr || !charges) return [];
 
@@ -111,6 +155,161 @@ export const rentService = {
       ...c,
       tenant_name: tenantMap[c.tenant_id] || "Tenant",
     }));
+  },
+
+  /**
+   * Retrieves overdue rent charges for the business, calculating real outstanding balance
+   * directly from amount - amount_paid (governed by payment allocations).
+   * Excludes waived and fully paid charges. Enforces caller property scope and selected property filter.
+   * Batches tenant, property, room, and bed relationships in parallel without per-row queries.
+   */
+  async getOverdueRentCharges(
+    businessId: string,
+    options?: { propertyId?: string | null }
+  ): Promise<OverdueRentChargeItem[]> {
+    const supabase = createClient();
+    const userContext = await this.getUserRentPermissions(businessId);
+
+    const now = new Date();
+    const todayStr = now.toISOString().slice(0, 10);
+
+    let query = supabase
+      .from("rent_charges")
+      .select("*")
+      .eq("business_id", businessId)
+      .neq("status", "waived")
+      .neq("status", "paid")
+      .lt("due_date", todayStr);
+
+    if (userContext.permissions.accessiblePropertyIds !== null) {
+      if (userContext.permissions.accessiblePropertyIds.length === 0) {
+        return [];
+      }
+      if (options?.propertyId && options.propertyId !== "all") {
+        if (!userContext.permissions.accessiblePropertyIds.includes(options.propertyId)) {
+          return [];
+        }
+        query = query.eq("property_id", options.propertyId);
+      } else {
+        query = query.in("property_id", userContext.permissions.accessiblePropertyIds);
+      }
+    } else {
+      if (options?.propertyId && options.propertyId !== "all") {
+        query = query.eq("property_id", options.propertyId);
+      }
+    }
+
+    query = query.order("due_date", { ascending: true });
+
+    const { data: rawCharges, error } = await query;
+    if (error || !rawCharges || rawCharges.length === 0) return [];
+
+    // Filter strictly positive outstanding balance
+    const overdueCharges = rawCharges.filter((c) => Number(c.amount) > Number(c.amount_paid));
+    if (overdueCharges.length === 0) return [];
+
+    const tenantIds = Array.from(new Set(overdueCharges.map((c) => c.tenant_id)));
+    const propertyIds = Array.from(new Set(overdueCharges.map((c) => c.property_id)));
+    const explicitOccupancyIds = Array.from(
+      new Set(overdueCharges.map((c) => c.occupancy_id).filter(Boolean))
+    ) as string[];
+
+    const [tenantsRes, propertiesRes, occupanciesRes, activeOccupanciesRes] = await Promise.all([
+      tenantIds.length > 0
+        ? supabase.from("tenants").select("id, full_name, phone").in("id", tenantIds)
+        : Promise.resolve({ data: [] }),
+      propertyIds.length > 0
+        ? supabase.from("properties").select("id, name").in("id", propertyIds)
+        : Promise.resolve({ data: [] }),
+      explicitOccupancyIds.length > 0
+        ? supabase.from("occupancies").select("id, room_id, bed_id, tenant_id").in("id", explicitOccupancyIds)
+        : Promise.resolve({ data: [] }),
+      tenantIds.length > 0
+        ? supabase.from("occupancies").select("id, room_id, bed_id, tenant_id").in("tenant_id", tenantIds).eq("status", "active")
+        : Promise.resolve({ data: [] }),
+    ]);
+
+    const tenantMap = (tenantsRes.data || []).reduce<Record<string, { full_name: string; phone: string | null }>>(
+      (acc, t) => {
+        acc[t.id] = { full_name: t.full_name, phone: t.phone };
+        return acc;
+      },
+      {}
+    );
+
+    const propertyMap = (propertiesRes.data || []).reduce<Record<string, string>>((acc, p) => {
+      acc[p.id] = p.name;
+      return acc;
+    }, {});
+
+    const occMap: Record<string, { room_id: string; bed_id: string }> = {};
+    (occupanciesRes.data || []).forEach((o) => {
+      occMap[o.id] = { room_id: o.room_id, bed_id: o.bed_id };
+    });
+
+    const tenantActiveOccMap: Record<string, { room_id: string; bed_id: string }> = {};
+    (activeOccupanciesRes.data || []).forEach((o) => {
+      tenantActiveOccMap[o.tenant_id] = { room_id: o.room_id, bed_id: o.bed_id };
+    });
+
+    const roomIds = new Set<string>();
+    const bedIds = new Set<string>();
+
+    for (const c of overdueCharges) {
+      const occ = (c.occupancy_id && occMap[c.occupancy_id]) || tenantActiveOccMap[c.tenant_id];
+      if (occ) {
+        if (occ.room_id) roomIds.add(occ.room_id);
+        if (occ.bed_id) bedIds.add(occ.bed_id);
+      }
+    }
+
+    const [roomsRes, bedsRes] = await Promise.all([
+      roomIds.size > 0
+        ? supabase.from("rooms").select("id, room_number").in("id", Array.from(roomIds))
+        : Promise.resolve({ data: [] }),
+      bedIds.size > 0
+        ? supabase.from("beds").select("id, bed_number").in("id", Array.from(bedIds))
+        : Promise.resolve({ data: [] }),
+    ]);
+
+    const roomMap = (roomsRes.data || []).reduce<Record<string, string>>((acc, r) => {
+      acc[r.id] = r.room_number;
+      return acc;
+    }, {});
+
+    const bedMap = (bedsRes.data || []).reduce<Record<string, string>>((acc, b) => {
+      acc[b.id] = b.bed_number;
+      return acc;
+    }, {});
+
+    const todayMs = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+
+    return overdueCharges.map((c) => {
+      const occ = (c.occupancy_id && occMap[c.occupancy_id]) || tenantActiveOccMap[c.tenant_id];
+      const [dy, dm, dd] = c.due_date.split("-").map(Number);
+      const dueDateLocal = new Date(dy, dm - 1, dd).getTime();
+      const daysOverdue = Math.max(1, Math.round((todayMs - dueDateLocal) / (1000 * 60 * 60 * 24)));
+      const balance = Math.max(0, Number(c.amount) - Number(c.amount_paid));
+
+      return {
+        id: c.id,
+        tenant_id: c.tenant_id,
+        tenant_name: tenantMap[c.tenant_id]?.full_name || "Unknown Tenant",
+        tenant_phone: tenantMap[c.tenant_id]?.phone || "—",
+        property_id: c.property_id,
+        property_name: propertyMap[c.property_id] || "Property",
+        room_number: (occ && roomMap[occ.room_id]) || "—",
+        bed_number: (occ && bedMap[occ.bed_id]) || "—",
+        period_start: c.period_start,
+        period_end: c.period_end,
+        due_date: c.due_date,
+        amount: Number(c.amount),
+        amount_paid: Number(c.amount_paid),
+        outstanding_balance: balance,
+        days_overdue: daysOverdue,
+        status: c.status,
+      };
+    });
   },
 
   async createRentCharge(payload: {

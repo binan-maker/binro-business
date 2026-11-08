@@ -19,6 +19,14 @@ import {
   Copy,
   Clock,
   Check,
+  Crown,
+  ShieldCheck,
+  UserCheck,
+  AlertTriangle,
+  Ban,
+  Info,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react";
 
 export default function StaffPage() {
@@ -28,6 +36,9 @@ export default function StaffPage() {
   const [staffList, setStaffList] = useState<StaffMemberWithDetails[]>([]);
   const [properties, setProperties] = useState<Property[]>([]);
   const [pendingInvitations, setPendingInvitations] = useState<BusinessInvitation[]>([]);
+
+  // Permissions Guide Visibility Toggle
+  const [showRoleGuide, setShowRoleGuide] = useState(true);
 
   // Modal State for Property Assignment
   const [assignModalOpen, setAssignModalOpen] = useState(false);
@@ -44,6 +55,12 @@ export default function StaffPage() {
   const [inviting, setInviting] = useState(false);
   const [inviteSuccessLink, setInviteSuccessLink] = useState<string | null>(null);
   const [copiedLink, setCopiedLink] = useState(false);
+
+  // Modal State for Invitation Cancellation
+  const [cancelModalOpen, setCancelModalOpen] = useState(false);
+  const [selectedInviteForCancel, setSelectedInviteForCancel] = useState<BusinessInvitation | null>(null);
+  const [cancelling, setCancelling] = useState(false);
+  const [cancelError, setCancelError] = useState<string | null>(null);
 
   const [statusMsg, setStatusMsg] = useState<{ type: "success" | "error"; text: string } | null>(
     null
@@ -186,6 +203,34 @@ export default function StaffPage() {
     }
   };
 
+  const handleOpenCancelModal = (inv: BusinessInvitation) => {
+    setSelectedInviteForCancel(inv);
+    setCancelError(null);
+    setCancelModalOpen(true);
+  };
+
+  const handleConfirmCancel = async () => {
+    if (!selectedInviteForCancel) return;
+    setCancelling(true);
+    setCancelError(null);
+
+    try {
+      await businessService.cancelStaffInvitation(selectedInviteForCancel.id);
+      setStatusMsg({
+        type: "success",
+        text: `Warden invitation for ${selectedInviteForCancel.phone} has been cancelled.`,
+      });
+      setCancelModalOpen(false);
+      setSelectedInviteForCancel(null);
+      await loadData();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to cancel invitation.";
+      setCancelError(msg);
+    } finally {
+      setCancelling(false);
+    }
+  };
+
   const activeWardens = staffList.filter((s) => s.role === "warden");
   const totalMembers = staffList.length;
 
@@ -272,6 +317,97 @@ export default function StaffPage() {
         </div>
       </div>
 
+      {/* Role Permissions & Security Guide */}
+      <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-2xl overflow-hidden shadow-xs">
+        <button
+          type="button"
+          onClick={() => setShowRoleGuide(!showRoleGuide)}
+          className="w-full px-5 py-3.5 border-b border-zinc-200 dark:border-zinc-800 flex items-center justify-between cursor-pointer select-none bg-zinc-50/50 dark:bg-zinc-850 hover:bg-zinc-100/60 dark:hover:bg-zinc-800 transition-colors text-left"
+        >
+          <div className="flex items-center gap-2">
+            <Info className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0" />
+            <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+              Role Permissions & Access Scope Guide
+            </h2>
+          </div>
+          <div className="flex items-center gap-1.5 text-xs text-zinc-500 font-medium">
+            <span>{showRoleGuide ? "Hide Guide" : "Show Guide"}</span>
+            {showRoleGuide ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+          </div>
+        </button>
+
+        {showRoleGuide && (
+          <div className="p-5 space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {/* Owner Role */}
+              <div className="p-4 rounded-xl border border-amber-200 dark:border-amber-900/60 bg-amber-50/40 dark:bg-amber-950/20 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-100 text-amber-900 dark:bg-amber-900/60 dark:text-amber-200 border border-amber-300 dark:border-amber-700">
+                    <Crown className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+                    Owner
+                  </span>
+                  <span className="text-[10px] uppercase font-bold tracking-wider text-amber-700 dark:text-amber-300">Global Admin</span>
+                </div>
+                <p className="text-xs text-zinc-600 dark:text-zinc-400 leading-relaxed">
+                  Business founder with complete global control across <strong>all properties</strong>. Full administrative, operational, and financial powers.
+                </p>
+                <div className="pt-2 border-t border-amber-200/60 dark:border-amber-900/40 text-[11px] text-zinc-600 dark:text-zinc-400 space-y-1">
+                  <div><strong>Property Scope:</strong> All Properties (Global)</div>
+                  <div><strong>Key Authority:</strong> Staff management, property delegation, organization settings</div>
+                </div>
+              </div>
+
+              {/* Admin Role */}
+              <div className="p-4 rounded-xl border border-blue-200 dark:border-blue-900/60 bg-blue-50/40 dark:bg-blue-950/20 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-blue-100 text-blue-900 dark:bg-blue-900/60 dark:text-blue-200 border border-blue-300 dark:border-blue-700">
+                    <ShieldCheck className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                    Admin
+                  </span>
+                  <span className="text-[10px] uppercase font-bold tracking-wider text-blue-700 dark:text-blue-300">Global Admin</span>
+                </div>
+                <p className="text-xs text-zinc-600 dark:text-zinc-400 leading-relaxed">
+                  Trusted business administrator with global management authority across <strong>all properties</strong>.
+                </p>
+                <div className="pt-2 border-t border-blue-200/60 dark:border-blue-900/40 text-[11px] text-zinc-600 dark:text-zinc-400 space-y-1">
+                  <div><strong>Property Scope:</strong> All Properties (Global)</div>
+                  <div><strong>Key Authority:</strong> Inviting staff, property assignments, full financial operations</div>
+                </div>
+              </div>
+
+              {/* Property Warden Role */}
+              <div className="p-4 rounded-xl border border-purple-200 dark:border-purple-900/60 bg-purple-50/40 dark:bg-purple-950/20 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-purple-100 text-purple-900 dark:bg-purple-900/60 dark:text-purple-200 border border-purple-300 dark:border-purple-700">
+                    <UserCheck className="w-3.5 h-3.5 text-purple-600 dark:text-purple-400" />
+                    Property Warden
+                  </span>
+                  <span className="text-[10px] uppercase font-bold tracking-wider text-purple-700 dark:text-purple-300">Property-Scoped</span>
+                </div>
+                <p className="text-xs text-zinc-600 dark:text-zinc-400 leading-relaxed">
+                  Delegated operational staff. Authorized access is <strong>strictly scoped</strong> to their assigned property for daily tenant and room operations.
+                </p>
+                <div className="pt-2 border-t border-purple-200/60 dark:border-purple-900/40 text-[11px] text-zinc-600 dark:text-zinc-400 space-y-1">
+                  <div><strong>Property Scope:</strong> Assigned Property Only</div>
+                  <div><strong>Allowed:</strong> Tenant check-in/out, room beds, bill generation, payment collection</div>
+                </div>
+              </div>
+            </div>
+
+            {/* Sensitive Operations Security Enforcement Notice */}
+            <div className="p-3.5 rounded-xl bg-zinc-50 dark:bg-zinc-800/60 border border-zinc-200 dark:border-zinc-700/60 flex items-start gap-2.5 text-xs">
+              <Shield className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+              <div className="text-zinc-600 dark:text-zinc-300 leading-relaxed">
+                <span className="font-semibold text-zinc-900 dark:text-zinc-100">
+                  Sensitive Operations Restricted to Owners & Admins:
+                </span>{" "}
+                Rent bill waivers, payment reversals, rent charge deletions, removing payment allocations, inviting wardens, and editing property assignments are strictly reserved for Owners and Admins. Property wardens cannot execute these sensitive financial operations (enforced at both the database level via Postgres RLS and the application layer).
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
       {/* Staff Members Table */}
       <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-2xl overflow-hidden shadow-xs">
         <div className="px-5 py-3.5 border-b border-zinc-200 dark:border-zinc-800 flex items-center justify-between">
@@ -302,7 +438,7 @@ export default function StaffPage() {
                 <tr>
                   <th className="py-3 px-4">Member Name</th>
                   <th className="py-3 px-4">Phone Number</th>
-                  <th className="py-3 px-4">Role</th>
+                  <th className="py-3 px-4">Role & Scope</th>
                   <th className="py-3 px-4">Assigned Property</th>
                   <th className="py-3 px-4">Status</th>
                   {canManageStaff && <th className="py-3 px-4 text-right">Actions</th>}
@@ -320,30 +456,72 @@ export default function StaffPage() {
                       )}
                     </td>
                     <td className="py-3.5 px-4 text-zinc-600 dark:text-zinc-300">
-                      <span className="flex items-center gap-1">
+                      <span className="flex items-center gap-1 font-mono">
                         <Phone className="w-3.5 h-3.5 text-zinc-400" />
                         {s.phone}
                       </span>
                     </td>
                     <td className="py-3.5 px-4">
-                      <span
-                        className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold capitalize ${
-                          s.role === "owner"
-                            ? "bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400 border border-amber-200 dark:border-amber-800"
-                            : s.role === "warden"
-                            ? "bg-purple-50 text-purple-700 dark:bg-purple-950/40 dark:text-purple-400 border border-purple-200 dark:border-purple-800"
-                            : "bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-400 border border-blue-200 dark:border-blue-800"
-                        }`}
-                      >
-                        <Shield className="w-3 h-3" />
-                        {s.role}
-                      </span>
+                      {s.role === "owner" ? (
+                        <div>
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-100 text-amber-900 dark:bg-amber-900/60 dark:text-amber-200 border border-amber-300 dark:border-amber-700">
+                            <Crown className="w-3 h-3 text-amber-600 dark:text-amber-400" />
+                            Owner
+                          </span>
+                          <span className="block text-[10px] text-zinc-400 mt-0.5">Full Organization Authority</span>
+                        </div>
+                      ) : s.role === "admin" ? (
+                        <div>
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-blue-100 text-blue-900 dark:bg-blue-900/60 dark:text-blue-200 border border-blue-300 dark:border-blue-700">
+                            <ShieldCheck className="w-3 h-3 text-blue-600 dark:text-blue-400" />
+                            Admin
+                          </span>
+                          <span className="block text-[10px] text-zinc-400 mt-0.5">Business Administrator</span>
+                        </div>
+                      ) : (
+                        <div>
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-purple-100 text-purple-900 dark:bg-purple-900/60 dark:text-purple-200 border border-purple-300 dark:border-purple-700">
+                            <UserCheck className="w-3 h-3 text-purple-600 dark:text-purple-400" />
+                            Property Warden
+                          </span>
+                          <span className="block text-[10px] text-zinc-400 mt-0.5">Property-Scoped Staff</span>
+                        </div>
+                      )}
                     </td>
                     <td className="py-3.5 px-4 text-zinc-600 dark:text-zinc-300">
-                      <span className="flex items-center gap-1 font-medium">
-                        <Building className="w-3.5 h-3.5 text-zinc-400" />
-                        {s.property_name}
-                      </span>
+                      {s.role === "warden" ? (
+                        s.property_id ? (
+                          <div>
+                            <span className="inline-flex items-center gap-1.5 font-semibold text-purple-700 dark:text-purple-300 bg-purple-50 dark:bg-purple-950/40 px-2 py-0.5 rounded-md border border-purple-200 dark:border-purple-800">
+                              <Building className="w-3.5 h-3.5 text-purple-600 shrink-0" />
+                              {s.property_name}
+                            </span>
+                            <span className="block text-[10px] text-purple-600/70 dark:text-purple-400/70 mt-0.5">
+                              Scoped strictly to this property
+                            </span>
+                          </div>
+                        ) : (
+                          <div>
+                            <span className="inline-flex items-center gap-1 font-medium text-zinc-700 dark:text-zinc-300 bg-zinc-100 dark:bg-zinc-800 px-2 py-0.5 rounded-md">
+                              <Building className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
+                              All Properties
+                            </span>
+                            <span className="block text-[10px] text-zinc-400 mt-0.5">
+                              Unrestricted property access
+                            </span>
+                          </div>
+                        )
+                      ) : (
+                        <div>
+                          <span className="inline-flex items-center gap-1 font-medium text-zinc-700 dark:text-zinc-300">
+                            <Building className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
+                            All Properties
+                          </span>
+                          <span className="block text-[10px] text-zinc-400 mt-0.5">
+                            Global business access
+                          </span>
+                        </div>
+                      )}
                     </td>
                     <td className="py-3.5 px-4">
                       <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400 font-semibold capitalize text-[11px]">
@@ -399,7 +577,7 @@ export default function StaffPage() {
                     <th className="py-3 px-4">Assigned Property</th>
                     <th className="py-3 px-4">Expires</th>
                     <th className="py-3 px-4">Status</th>
-                    <th className="py-3 px-4 text-right">Invite Link</th>
+                    <th className="py-3 px-4 text-right">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
@@ -414,15 +592,15 @@ export default function StaffPage() {
 
                     return (
                       <tr key={inv.id} className="hover:bg-zinc-50/60 dark:hover:bg-zinc-800/40">
-                        <td className="py-3.5 px-4 font-semibold text-zinc-900 dark:text-zinc-100">
+                        <td className="py-3.5 px-4 font-semibold text-zinc-900 dark:text-zinc-100 font-mono">
                           {inv.phone}
                         </td>
                         <td className="py-3.5 px-4 text-zinc-600 dark:text-zinc-300">
                           {inv.full_name || "—"}
                         </td>
                         <td className="py-3.5 px-4 text-zinc-600 dark:text-zinc-300">
-                          <span className="inline-flex items-center gap-1 font-medium">
-                            <Building className="w-3.5 h-3.5 text-zinc-400" />
+                          <span className="inline-flex items-center gap-1 font-medium bg-purple-50 dark:bg-purple-950/40 text-purple-700 dark:text-purple-300 px-2 py-0.5 rounded-md border border-purple-200 dark:border-purple-800">
+                            <Building className="w-3.5 h-3.5 text-purple-600 shrink-0" />
                             {inv.property_name}
                           </span>
                         </td>
@@ -435,13 +613,22 @@ export default function StaffPage() {
                           </span>
                         </td>
                         <td className="py-3.5 px-4 text-right">
-                          <button
-                            onClick={() => handleCopyLink(shareUrl)}
-                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-200 font-medium text-[11px] transition-colors cursor-pointer"
-                          >
-                            <Copy className="w-3 h-3" />
-                            Copy Link
-                          </button>
+                          <div className="inline-flex items-center gap-1.5 justify-end">
+                            <button
+                              onClick={() => handleCopyLink(shareUrl)}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-200 font-medium text-[11px] transition-colors cursor-pointer"
+                            >
+                              <Copy className="w-3 h-3" />
+                              Copy Link
+                            </button>
+                            <button
+                              onClick={() => handleOpenCancelModal(inv)}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-red-50 dark:bg-red-950/40 hover:bg-red-100 dark:hover:bg-red-900/60 text-red-700 dark:text-red-400 border border-red-200 dark:border-red-900/60 font-medium text-[11px] transition-colors cursor-pointer"
+                            >
+                              <Ban className="w-3 h-3" />
+                              Cancel Invite
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     );
@@ -490,8 +677,8 @@ export default function StaffPage() {
                     </option>
                   ))}
                 </select>
-                <p className="text-[11px] text-zinc-400 mt-1">
-                  Wardens will be restricted to view only tenants and rooms in their assigned property.
+                <p className="text-[11px] text-zinc-400 mt-1.5 leading-relaxed">
+                  Assigning a specific property restricts this member&apos;s operational scope strictly to that property. Selecting &quot;All Properties&quot; grants business-wide access. Property assignments are replaced atomically in a single database transaction.
                 </p>
               </div>
 
@@ -689,6 +876,106 @@ export default function StaffPage() {
                 </form>
               </div>
             )}
+          </div>
+        </div>
+      )}
+      {/* Cancel Invitation Confirmation Modal */}
+      {cancelModalOpen && selectedInviteForCancel && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-xs">
+          <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-2xl max-w-md w-full p-6 shadow-2xl relative">
+            <button
+              onClick={() => {
+                if (!cancelling) {
+                  setCancelModalOpen(false);
+                  setSelectedInviteForCancel(null);
+                  setCancelError(null);
+                }
+              }}
+              disabled={cancelling}
+              className="absolute right-4 top-4 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 cursor-pointer disabled:opacity-50"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="w-11 h-11 rounded-2xl bg-red-100 dark:bg-red-950/60 flex items-center justify-center text-red-600 dark:text-red-400 mb-4">
+              <AlertTriangle className="w-6 h-6" />
+            </div>
+
+            <div className="mb-4">
+              <h2 className="text-lg font-bold text-zinc-900 dark:text-zinc-100">
+                Cancel Warden Invitation?
+              </h2>
+              <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
+                Are you sure you want to revoke this invitation? Once cancelled, the shareable link will immediately stop working and this phone number will not be able to use it to join your business.
+              </p>
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-zinc-50 dark:bg-zinc-800/60 border border-zinc-200 dark:border-zinc-700/60 space-y-2 mb-4 text-xs">
+              <div className="flex justify-between items-center">
+                <span className="text-zinc-500">Invitee Phone:</span>
+                <span className="font-semibold text-zinc-900 dark:text-zinc-100 font-mono">{selectedInviteForCancel.phone}</span>
+              </div>
+              {selectedInviteForCancel.full_name && (
+                <div className="flex justify-between items-center">
+                  <span className="text-zinc-500">Full Name:</span>
+                  <span className="font-medium text-zinc-900 dark:text-zinc-200">{selectedInviteForCancel.full_name}</span>
+                </div>
+              )}
+              <div className="flex justify-between items-center">
+                <span className="text-zinc-500">Assigned Property:</span>
+                <span className="font-medium text-zinc-900 dark:text-zinc-200">{selectedInviteForCancel.property_name}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-zinc-500">Expires:</span>
+                <span className="text-zinc-600 dark:text-zinc-400">
+                  {new Date(selectedInviteForCancel.expires_at).toLocaleDateString(undefined, {
+                    month: "short",
+                    day: "numeric",
+                    year: "numeric",
+                  })}
+                </span>
+              </div>
+            </div>
+
+            {cancelError && (
+              <div className="mb-4 p-3 rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/50 flex items-start gap-2 text-xs text-red-700 dark:text-red-400">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                <span>{cancelError}</span>
+              </div>
+            )}
+
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-zinc-100 dark:border-zinc-800">
+              <button
+                type="button"
+                onClick={() => {
+                  setCancelModalOpen(false);
+                  setSelectedInviteForCancel(null);
+                  setCancelError(null);
+                }}
+                disabled={cancelling}
+                className="px-3.5 py-2 rounded-xl text-xs font-medium text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors cursor-pointer disabled:opacity-50"
+              >
+                Keep Invitation
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmCancel}
+                disabled={cancelling}
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold text-white bg-red-600 hover:bg-red-700 transition-colors shadow-xs cursor-pointer disabled:opacity-50"
+              >
+                {cancelling ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    Cancelling...
+                  </>
+                ) : (
+                  <>
+                    <Ban className="w-3.5 h-3.5" />
+                    Yes, Cancel Invitation
+                  </>
+                )}
+              </button>
+            </div>
           </div>
         </div>
       )}

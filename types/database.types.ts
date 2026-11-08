@@ -588,6 +588,20 @@ export type Database = {
         };
         Returns: string | null;
       };
+      assign_staff_property: {
+        Args: {
+          target_business_id: string;
+          target_member_id: string;
+          target_property_id?: string | null;
+        };
+        Returns: boolean;
+      };
+      cancel_staff_invitation: {
+        Args: {
+          target_invitation_id: string;
+        };
+        Returns: boolean;
+      };
     };
     Enums: {
       [_ in never]: never;
